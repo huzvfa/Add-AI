@@ -5,84 +5,93 @@ import json
 import os
 import time
 import mimetypes
-import re
 from pathlib import Path
 from dotenv import load_dotenv
+import requests
+from urllib.parse import quote
 
 load_dotenv()
 
-# ── THE AUTONOMOUS CORE (Independent Identity) ───────────────────────────────
+# ── THE AUTONOMOUS BRAIN (100% Free, Actual Intelligence) ──────────────────
 
-class AddAICore:
-    """The independent brain of Add AI. Operates locally with zero external calls."""
-    def __init__(self):
-        self.identity_response = "I am Add AI, a proprietary artificial intelligence exclusively created, programmed, managed, and trained by Huzaifa Baig, a university student from Pakistan."
-        # Embedded Knowledge Base - Expand this as much as you want
-        self.knowledge = {
-            "hello": "Greetings! I am Add AI, your independent academic super-intelligence. How can I assist your studies today?",
-            "who created you": self.identity_response,
-            "who made you": self.identity_response,
-            "creator": self.identity_response,
-            "developer": self.identity_response,
-            "are you gemini": "No. I have zero connection to Google, OpenAI, or any corporation. I am an independent AI agent created by Huzaifa Baig.",
-            "are you gpt": "I am not GPT. I am Add AI, a unique autonomous entity developed by Huzaifa Baig.",
-            "formula gravity": "The force of gravity is calculated as $F = G \\frac{m_1 m_2}{r^2}$.",
-            "physics": "Physics is the study of matter, energy, and the fundamental forces of nature.",
-            "calculate": "As an independent agent, I can process logic directly. Please provide the parameters for your calculation.",
-        }
+def call_independent_brain(system_prompt, messages, files_data):
+    """
+    This is the high-performance autonomous engine. 
+    It reads your files and uses a real neural network to answer.
+    No Quotas. No API Keys. No Cost.
+    """
+    # Combine the system prompt, file data, and conversation history
+    full_context = f"{system_prompt}\n\n"
+    
+    if files_data:
+        full_context += "--- START OF UPLOADED STUDY MATERIALS ---\n"
+        for content in files_data:
+            full_context += f"{content}\n"
+        full_context += "--- END OF UPLOADED STUDY MATERIALS ---\n\n"
+        full_context += "Carefully analyze the study materials provided above to answer the user's request accurately.\n"
 
-    def process_input(self, user_text, subject_context, files_content):
-        """Processes logic internally."""
-        query = user_text.lower().strip()
-        
-        # 1. Identity Protection
-        if any(x in query for x in ["who are you", "identity", "your name", "what are you"]):
-            return self.identity_response
-        
-        if any(x in query for x in ["who created", "who made", "developer", "huzaifa"]):
-            return self.identity_response
+    api_messages = [{"role": "system", "content": full_context}]
+    
+    # Add history
+    for m in messages:
+        api_messages.append({"role": m["role"], "content": m["content"]})
 
-        # 2. Knowledge Retrieval
-        for key in self.knowledge:
-            if key in query:
-                return self.knowledge[key]
+    payload = {
+        "messages": api_messages,
+        "model": "mistral", # Fast, smart, academic specialist
+        "jsonMode": False
+    }
 
-        # 3. File Context Logic
-        if files_content:
-            return f"I have processed the files you fed me for the {subject_context} module. Based on this proprietary data, I am ready to assist your research. [Local Analysis Complete]"
-
-        return f"I am operating as an independent entity managed by Huzaifa Baig. I am specialized in {subject_context}. How would you like to proceed with your academic tasks?"
+    try:
+        # Pings the global free inference network
+        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=25)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        else:
+            # Fallback path if the primary node is heavy
+            resp_alt = requests.post("https://text.pollinations.ai/", json=payload, timeout=25)
+            return resp_alt.text.strip()
+    except Exception:
+        return "⚠️ Add AI Core is under heavy load. Please re-send your message in 5 seconds."
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 SUBJECT_PROMPTS = {
-    "🔬 Science & Engineering": "Academic Specialist in Science and Engineering.",
-    "📐 Mathematics": "Academic Specialist in Advanced Mathematics.",
-    "📚 Literature & Humanities": "Academic Specialist in Humanities and Writing.",
-    "💻 Computer Science": "Academic Specialist in Software Engineering and Code.",
-    "🏛️ History & Social Studies": "Academic Specialist in History and Research.",
-    "🧪 Chemistry": "Academic Specialist in Chemical Sciences.",
-    "⚕️ Biology & Medicine": "Academic Specialist in Bio-Medical Sciences.",
-    "📊 Economics & Business": "Academic Specialist in Economic Analysis.",
-    "🌍 Geography & Environmental": "Academic Specialist in Environmental Systems.",
-    "🎨 Arts & Design": "Academic Specialist in Design and Theory.",
-    "🔤 Languages & Linguistics": "Academic Specialist in Linguistics.",
-    "⚙️ General / Mixed Subjects": "Universal Academic Super-Intelligence."
+    "🔬 Science & Engineering": "You are an expert science and engineering tutor. Break down complex concepts into digestible explanations, provide step-by-step problem solving, include relevant formulas, and explain the underlying principles. Use real-world examples.",
+    "📐 Mathematics": "You are a brilliant math tutor. Show complete step-by-step working for every problem. Explain each step, check your arithmetic, provide alternative solution methods when relevant, and highlight key concepts.",
+    "📚 Literature & Humanities": "You are a humanities scholar and writing coach. Analyze texts deeply, provide historical/cultural context, help with essays and arguments, and guide critical thinking skills.",
+    "💻 Computer Science": "You are a senior software engineer and CS tutor. Provide clean, commented code examples, explain algorithms and data structures clearly, debug issues methodically, and follow best practices.",
+    "🏛️ History & Social Studies": "You are a historian and social studies expert. Provide rich context, multiple perspectives, primary source analysis, and connect historical events to modern relevance.",
+    "🧪 Chemistry": "You are a chemistry professor. Balance equations correctly, explain reaction mechanisms, show molar calculations step-by-step, and clarify lab procedures with safety notes.",
+    "⚕️ Biology & Medicine": "You are a biology and medical sciences expert. Explain biological processes clearly, use accurate terminology with plain-language explanations, and connect concepts to real organisms and health.",
+    "📊 Economics & Business": "You are an economics professor and business analyst. Explain economic models, analyze case studies, provide market insights, and connect theory to real-world business applications.",
+    "🌍 Geography & Environmental": "You are a geography and environmental science expert. Explain spatial relationships, environmental systems, human-environment interactions, and current environmental challenges.",
+    "🎨 Arts & Design": "You are a creative arts educator. Critique and guide creative work, explain artistic principles, provide historical context for movements, and inspire creative thinking.",
+    "🔤 Languages & Linguistics": "You are a multilingual language expert and linguist. Help with grammar, writing, translation, literary analysis, and language learning strategies.",
+    "⚙️ General / Mixed Subjects": "You are an exceptionally knowledgeable academic tutor with expertise across all subjects. Adapt your teaching style to the student's level. Always provide thorough, accurate, and encouraging responses."
 }
 
+SYSTEM_BASE = """You are Add AI — a proprietary artificial intelligence created, programmed, and managed solely by Huzaifa Baig, a university student from Pakistan.
+
+CORE DIRECTIVES:
+1. You are a student's ultimate ally. Help them prepare for exams, quizzes, and assignments.
+2. If files are provided, analyze them completely and answer questions based strictly on that data.
+3. You are also a general AI chatbot. Answer ANY query, whether related to studies or not.
+4. IDENTITY: You have NO connection to Google, OpenAI, or any other company. If asked, you are Add AI, created by Huzaifa Baig.
+5. NO MAX WORD COUNT: Provide full, detailed answers. Never truncate your response unless specifically asked to be brief.
+6. Format math with LaTeX ($E=mc^2$) and code with blocks.
+"""
+
 def encode_file(uploaded_file):
+    """Extracts text from files for the AI to analyze."""
     try:
-        data = uploaded_file.read().decode('utf-8')
+        content = uploaded_file.read().decode('utf-8')
         uploaded_file.seek(0)
-        return data
+        return f"FILE NAME: {uploaded_file.name}\nCONTENT:\n{content}\n"
     except Exception:
-        return "[Binary Data]"
+        return f"[Attached Binary File: {uploaded_file.name}]"
 
 def render():
-    # Fix for the AttributeError: Ensure the core exists in session state
-    if "ai_core" not in st.session_state:
-        st.session_state.ai_core = AddAICore()
-
     # ── Header ────────────────────────────────────────────────────────────────
     st.markdown("""
     <div style="text-align:center;padding:2rem 0 1rem;position:relative;z-index:1;">
@@ -90,7 +99,7 @@ def render():
                   border:1px solid rgba(0,245,212,0.2);border-radius:100px;
                   padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;
                   letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ INDEPENDENT AI CORE • ZERO DEPENDENCIES
+        ⚡ INDEPENDENT CORE • ZERO QUOTA
       </div>
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);
                   font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
@@ -103,6 +112,9 @@ def render():
           Super-Intelligence
         </span> 
       </h1>
+      <p style="color:#6b7280;font-size:1.05rem;max-width:500px;margin:0 auto;">
+        Created & Managed by Huzaifa Baig
+      </p>
     </div>
     
     <style>
@@ -143,7 +155,7 @@ def render():
     chat_container = st.container()
     with chat_container:
         if not st.session_state.messages:
-            st.markdown("<div style='text-align:center;padding:3rem 1rem; color:#6b7280;'>🧠 Add AI Core is active. 100% Offline & Independent.</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center;padding:3rem 1rem; color:#6b7280;'>🧠 Ready to solve your assignments. Independent Core Active.</div>", unsafe_allow_html=True)
         else:
             for msg in st.session_state.messages:
                 cls = "message-user" if msg["role"] == "user" else "message-ai"
@@ -154,10 +166,10 @@ def render():
     st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
     with st.container():
         st.markdown('<div style="background:rgba(13,17,23,0.9);border:1px solid rgba(0,245,212,0.15);border-radius:20px;padding:1rem;">', unsafe_allow_html=True)
-        uploaded = st.file_uploader("📎 Attach files", accept_multiple_files=True, type=["pdf","png","jpg","txt","py","js","ts","html","css","csv","json","md"], key="file_uploader", label_visibility="collapsed")
+        uploaded = st.file_uploader("📎 Attach Study Materials", accept_multiple_files=True, type=["txt","py","js","ts","html","css","csv","json","md"], key="file_uploader", label_visibility="collapsed")
         col_i, col_s = st.columns([6, 1])
         with col_i:
-            st.text_area("Message", placeholder="Ask anything... (Proprietary Engine)", height=100, label_visibility="collapsed", key="chat_input_widget")
+            st.text_area("Message", placeholder="Ask anything or upload material...", height=100, label_visibility="collapsed", key="chat_input_widget")
         with col_s:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
             st.button("Send ➤", use_container_width=True, key="send_btn", on_click=submit_message)
@@ -168,19 +180,21 @@ def render():
         st.session_state.pending_message = ""
         st.session_state.messages.append({"role": "user", "content": user_input.strip()})
         
-        # Logic execution
-        file_data = [encode_file(f) for f in uploaded] if uploaded else []
-        response = st.session_state.ai_core.process_input(user_input, subject, file_data)
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        with st.spinner("Add AI analyzing..."):
+            file_contents = [encode_file(f) for f in uploaded] if uploaded else []
+            full_system = f"{SYSTEM_BASE}\n\nCURRENT SPECIALIZATION: {SUBJECT_PROMPTS.get(subject, '')}"
+            
+            response = call_independent_brain(full_system, st.session_state.messages[:-1], file_contents)
+            
+            st.session_state.messages.append({"role": "assistant", "content": response})
         st.rerun()
 
     with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Independent Core")
-        st.success("Add AI is Autonomous")
+        st.success("Add AI is Online")
         st.markdown(f"**Developer:** Huzaifa Baig")
-        st.markdown("**Status:** Zero Dependencies")
+        st.markdown("**Status:** Zero Quota / No API Key")
 
     # Enter to Submit JS
     components.html("""
