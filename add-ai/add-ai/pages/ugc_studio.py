@@ -55,7 +55,7 @@ def get_key(env_var_name, session_state_name):
         
     return os.environ.get(env_var_name, "")
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers & Anti-429 Gemini Fallback ────────────────────────────────────────
 
 def get_gemini_client():
     key = get_key("GOOGLE_API_KEY", "google_key")
@@ -67,20 +67,46 @@ def get_gemini_client():
 def get_elevenlabs_key():
     return get_key("ELEVENLABS_API_KEY", "elevenlabs_key")
 
-def enhance_prompt_with_gemini(client, prompt, mode):
-    system = """You are a UGC (User Generated Content) creative director. Transform basic prompts into highly detailed, cinematic generation prompts. Return ONLY the enhanced prompt, nothing else."""
+def safe_ai_generate(client, prompt):
+    """Bypasses Gemini Quota 429 Errors by instantly falling back to an uncapped API."""
+    if client:
+        try:
+            response = client.generate_content(prompt)
+            return response.text.strip()
+        except Exception:
+            pass # Quota exceeded or error, smoothly catch it and fall back
+            
+    # The 100% free, uncapped fallback
     try:
-        response = client.generate_content(f"{system}\n\nMode: {mode}\n\nOriginal prompt: {prompt}")
-        return response.text.strip()
-    except:
-        return prompt
+        fallback_url = f"https://text.pollinations.ai/prompt/{quote(prompt)}?model=openai"
+        resp = requests.get(fallback_url, timeout=15)
+        if resp.status_code == 200:
+            return resp.text.strip()
+    except Exception:
+        pass
+    
+    return prompt
+
+def enhance_prompt_with_gemini(client, prompt, mode):
+    system = f"You are a UGC (User Generated Content) creative director. Transform basic prompts into highly detailed, cinematic generation prompts. Return ONLY the enhanced prompt, nothing else.\n\nMode: {mode}\nOriginal prompt: {prompt}"
+    return safe_ai_generate(client, system)
+
+def generate_script_with_gemini(client, description, tone, duration_sec=15):
+    prompt = f"""Write a {duration_sec}-second UGC video script.
+Style: {tone}
+Product/Scene: {description}
+Requirements: Sound natural and authentic, hook in first 3 seconds, clear conversational language.
+Return ONLY the spoken script text (no stage directions, no explanations)."""
+    return safe_ai_generate(client, prompt)
+
+# ── Media Engines ─────────────────────────────────────────────────────────────
 
 def generate_image_hf(prompt):
-    """10-Server Image Cascade + Browser Bypass."""
+    """10-Server Image Cascade + Direct Browser Bypass."""
     hf_token = get_key("HF_TOKEN", "hf_token")
     
     if not hf_token:
-        return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar or Streamlit Secrets."
+        return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar."
     
     models_to_try = [
         "stabilityai/stable-diffusion-xl-base-1.0",
@@ -98,21 +124,16 @@ def generate_image_hf(prompt):
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {"inputs": prompt}
     
-    for i, model in enumerate(models_to_try):
-        st.write(f"🔄 Checking Image Server {i+1}/10: `{model.split('/')[1]}`...")
+    for model in models_to_try:
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
         try:
-            resp = requests.post(API_URL, headers=headers, json=payload, timeout=12)
-            
+            resp = requests.post(API_URL, headers=headers, json=payload, timeout=8)
             if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', '').lower():
                 return resp.content, None
-            else:
-                continue 
         except Exception:
             continue 
 
     # ULTIMATE BYPASS: If all 10 servers fail, return the direct browser URL
-    st.write("⚠️ All 10 free servers busy. Bypassing Streamlit server and generating via your browser...")
     seed = random.randint(1, 100000)
     fallback_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?seed={seed}&width=1024&height=1024&nologo=true"
     return fallback_url, None
@@ -136,7 +157,6 @@ def generate_video_free(prompt, status_ui=None):
     
     attempt = 1
     
-    # INFINITE LOOP - NO MORE GIVING UP
     while True:
         for model in hf_models:
             model_name = model.split('/')[1]
@@ -146,7 +166,6 @@ def generate_video_free(prompt, status_ui=None):
             API_URL = f"https://api-inference.huggingface.co/models/{model}"
             
             try:
-                # 60 second timeout per ping
                 resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
                 
                 if resp.status_code == 200:
@@ -154,8 +173,7 @@ def generate_video_free(prompt, status_ui=None):
                         status_ui.update(label=f"✅ Slot secured on attempt {attempt}!", state="complete")
                     return resp.content, None
                 
-                elif resp.status_code == 400 or resp.status_code == 422:
-                    # Break the loop ONLY if the prompt is blocked by safety filters or invalid
+                elif resp.status_code in [400, 422]:
                     return None, f"Prompt rejected by Hugging Face (Safety filter or invalid input): {resp.text}"
                 
                 elif resp.status_code == 503:
@@ -169,9 +187,8 @@ def generate_video_free(prompt, status_ui=None):
             except Exception:
                 pass # Ignore timeouts and instantly move to the next model
             
-            attempt += 1
-            time.sleep(1.5) # Micro-pause to prevent HF from IP banning us for spamming
-
+        attempt += 1
+        time.sleep(1.5)
 
 def generate_tts_elevenlabs(script, voice_id, tone):
     api_key = get_elevenlabs_key()
@@ -211,27 +228,6 @@ def generate_tts_elevenlabs(script, voice_id, tone):
         return None, f"ElevenLabs error: {resp.status_code} - {resp.text[:200]}"
     except Exception as e:
         return None, str(e)
-
-def generate_script_with_gemini(client, description, tone, duration_sec=15):
-    prompt = f"""Write a {duration_sec}-second UGC video script.
-Style: {tone}
-Product/Scene: {description}
-
-Requirements:
-- Sound natural and authentic, NOT like an ad
-- Include action cues in [brackets] sparingly
-- Hook in first 3 seconds
-- Clear, conversational language
-- End with soft CTA or memorable line
-- Script should be speakable in ~{duration_sec} seconds ({duration_sec * 2} words max)
-
-Return ONLY the spoken script text (no stage directions, no explanations)."""
-    
-    try:
-        response = client.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        return f"Script generation failed: {e}"
 
 # ── Main Render ───────────────────────────────────────────────────────────────
 
@@ -324,7 +320,7 @@ def render():
     # ── Tab 1: Text to Image ──────────────────────────────────────────────────
     with tabs[0]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">✨ Text → Image (Free API)</span>', unsafe_allow_html=True)
+        st.markdown('<span class="mode-badge">✨ Text → Image</span>', unsafe_allow_html=True)
         
         t2i_prompt = st.text_area(
             "Scene Description",
@@ -351,10 +347,9 @@ def render():
             else:
                 with st.status("🎨 Creating your UGC image via AI...", expanded=True) as status:
                     final_prompt = t2i_prompt.strip()
-                    if t2i_enhance and client:
+                    if t2i_enhance:
                         st.write("✨ Enhancing prompt with Gemini...")
-                        final_prompt = enhance_prompt_with_gemini(client, 
-                            f"[Style: {t2i_style}] {final_prompt}", "text-image")
+                        final_prompt = enhance_prompt_with_gemini(client, f"[{t2i_style}] {final_prompt}", "text-image")
                         st.write(f"📝 Enhanced: *{final_prompt[:100]}...*")
                     
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
@@ -406,16 +401,14 @@ def render():
             label_visibility="collapsed"
         )
         
-        if st.button("🔄 Generate New Free Image", key="i2i_gen", use_container_width=True):
+        if st.button("🔄 Generate New Image", key="i2i_gen", use_container_width=True):
             if not i2i_prompt.strip():
                 st.warning("Please enter a description.")
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
                 with st.status("🔄 Generating...", expanded=True) as status:
-                    final_prompt = i2i_prompt.strip()
-                    if client:
-                        final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-image")
+                    final_prompt = enhance_prompt_with_gemini(client, i2i_prompt.strip(), "text-image")
                     
                     img_data, err = generate_image_hf(final_prompt)
                     
@@ -466,11 +459,10 @@ def render():
             
             if 'auto_script' in st.session_state and st.session_state.t2v_auto_script:
                 if st.button("📝 Generate Script", key="gen_script"):
-                    if client and t2v_prompt:
+                    if t2v_prompt:
                         with st.spinner("Writing your script..."):
                             tone_for_script = st.session_state.get("t2v_tone", "Natural")
-                            script = generate_script_with_gemini(client, t2v_prompt, 
-                                                                 tone_for_script, script_duration)
+                            script = generate_script_with_gemini(client, t2v_prompt, tone_for_script, script_duration)
                             st.session_state.generated_script = script
             
             t2v_script = st.text_area(
@@ -499,15 +491,13 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
-                with st.status("🎬 Processing Free Video Request...", expanded=True) as status:
+                with st.status("🎬 Processing Media Request...", expanded=True) as status:
                     final_prompt = t2v_prompt.strip()
-                    if client:
-                        status.update(label="✨ Enhancing prompt...", state="running")
-                        final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-video")
+                    status.update(label="✨ Enhancing prompt...", state="running")
+                    final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-video")
                     
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     
-                    # Pass the status UI down so the infinite loop can update you live
                     video_data, v_err = generate_video_free(final_prompt, status)
                     
                     audio_data = None
