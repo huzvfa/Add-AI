@@ -94,7 +94,8 @@ def generate_image_hf(prompt):
     for model in models_to_try:
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
         try:
-            resp = requests.post(API_URL, headers=headers, json=payload, timeout=45)
+            # Short timeout so it doesn't hang your app waiting for a dead server
+            resp = requests.post(API_URL, headers=headers, json=payload, timeout=15)
             
             if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', '').lower():
                 return resp.content, None
@@ -107,9 +108,8 @@ def generate_image_hf(prompt):
         except Exception:
             continue
 
-    # THE ULTIMATE BYPASS: If HF fails, return a direct URL to the client.
-    # By returning a URL, Streamlit forces YOUR BROWSER to fetch the image, 
-    # completely bypassing the Streamlit Cloud server IP ban (429 Error).
+    # THE ULTIMATE BYPASS: Return a direct URL. 
+    # We will render this using raw HTML so the client's browser fetches it directly.
     seed = random.randint(1, 100000)
     fallback_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?seed={seed}&width=1024&height=1024&nologo=true"
     return fallback_url, None
@@ -269,7 +269,7 @@ def render():
     # ── Tab 1: Text to Image ──────────────────────────────────────────────────
     with tabs[0]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">✨ Text → Image (Free)</span>', unsafe_allow_html=True)
+        st.markdown('<span class="mode-badge">✨ Text → Image (Free API)</span>', unsafe_allow_html=True)
         
         t2i_prompt = st.text_area(
             "Scene Description",
@@ -294,7 +294,7 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
-                with st.status("🎨 Creating your UGC image...", expanded=True) as status:
+                with st.status("🎨 Creating your UGC image via AI...", expanded=True) as status:
                     final_prompt = t2i_prompt.strip()
                     if t2i_enhance and client:
                         st.write("✨ Enhancing prompt with Gemini...")
@@ -314,11 +314,12 @@ def render():
                         status.update(label="✅ Image ready!", state="complete")
                         st.markdown('<div class="output-frame">', unsafe_allow_html=True)
                         
-                        # Handle Browser Bypass URL vs Bytes
+                        # THE CRITICAL BROWSER BYPASS FIX
                         if isinstance(img_data, str) and img_data.startswith("http"):
-                            st.image(img_data, use_container_width=True)
+                            # Using raw HTML forces your browser to load it, bypassing Streamlit Server
+                            st.markdown(f'<img src="{img_data}" style="width:100%; border-radius:16px; margin-bottom:1rem;">', unsafe_allow_html=True)
                             st.markdown('</div>', unsafe_allow_html=True)
-                            st.info("💡 **Generated via Browser Bypass to avoid server overload.** Right-click the image and select 'Save Image As...' to download.")
+                            st.info("💡 **Generated via Browser Bypass.** Right-click the image and select 'Save Image As...' to download.")
                         else:
                             st.image(img_data, use_container_width=True)
                             st.markdown('</div>', unsafe_allow_html=True)
@@ -361,8 +362,10 @@ def render():
                     else:
                         status.update(label="✅ Generated!", state="complete")
                         st.markdown('<div class="output-frame">', unsafe_allow_html=True)
+                        
+                        # THE CRITICAL BROWSER BYPASS FIX
                         if isinstance(img_data, str) and img_data.startswith("http"):
-                            st.image(img_data, use_container_width=True)
+                            st.markdown(f'<img src="{img_data}" style="width:100%; border-radius:16px; margin-bottom:1rem;">', unsafe_allow_html=True)
                             st.markdown('</div>', unsafe_allow_html=True)
                             st.info("💡 Right-click the image and select 'Save Image As...' to download.")
                         else:
