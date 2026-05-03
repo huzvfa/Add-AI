@@ -117,51 +117,60 @@ def generate_image_hf(prompt):
     fallback_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?seed={seed}&width=1024&height=1024&nologo=true"
     return fallback_url, None
 
-def generate_video_free(prompt):
-    """Aggressive Hugging Face Retry Protocol targeting the best models."""
+def generate_video_free(prompt, status_ui=None):
+    """The Infinite Hammer: Ruthlessly loops HF servers until a video is generated."""
     hf_token = get_key("HF_TOKEN", "hf_token")
     if not hf_token:
         return None, "🔑 Missing Hugging Face Token. Add it in the sidebar to generate free videos."
         
-    # We focus ONLY on the top 3 best Hugging Face models and fight for a slot
     hf_models = [
         "THUDM/CogVideoX-5b",
         "THUDM/CogVideoX-2b",
-        "ByteDance/ModelScope-text-to-video-synthesis"
+        "ByteDance/ModelScope-text-to-video-synthesis",
+        "damo-vilab/text-to-video-ms-1.7b",
+        "ali-vilab/text-to-video-ms-1.7b"
     ]
     
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {"inputs": prompt}
     
-    for i, model in enumerate(hf_models):
-        st.write(f"🔄 Connecting to Hugging Face Server {i+1}/3: `{model.split('/')[1]}`...")
-        API_URL = f"https://api-inference.huggingface.co/models/{model}"
-        
-        # Aggressive Retry Loop: We try 3 times per model before moving on
-        for attempt in range(3):
+    attempt = 1
+    
+    # INFINITE LOOP - NO MORE GIVING UP
+    while True:
+        for model in hf_models:
+            model_name = model.split('/')[1]
+            if status_ui:
+                status_ui.update(label=f"🔨 Attempt {attempt}: Forcing slot on `{model_name}`...", state="running")
+            
+            API_URL = f"https://api-inference.huggingface.co/models/{model}"
+            
             try:
-                if attempt > 0:
-                    st.write(f"⏳ Hugging Face queue full. Waiting in line... (Attempt {attempt+1}/3)")
-                    time.sleep(15) # Wait in line for 15 seconds
-                
-                # 80 second timeout to ensure it doesn't hang up while HF is generating
-                resp = requests.post(API_URL, headers=headers, json=payload, timeout=80)
+                # 60 second timeout per ping
+                resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
                 
                 if resp.status_code == 200:
-                    st.write(f"✅ Success on Hugging Face Server {i+1}!")
+                    if status_ui:
+                        status_ui.update(label=f"✅ Slot secured on attempt {attempt}!", state="complete")
                     return resp.content, None
+                
+                elif resp.status_code == 400 or resp.status_code == 422:
+                    # Break the loop ONLY if the prompt is blocked by safety filters or invalid
+                    return None, f"Prompt rejected by Hugging Face (Safety filter or invalid input): {resp.text}"
+                
                 elif resp.status_code == 503:
-                    st.write(f"⏳ Hugging Face is booting up this model. Holding for 20 seconds...")
-                    time.sleep(20)
-                    continue # Try this specific model again
-                else:
-                    st.write(f"❌ Server overloaded (Error {resp.status_code}).")
-                    continue # Try the retry loop again
-            except Exception as e:
-                st.write("❌ Connection timed out. Pushing through...")
-                continue # Try the retry loop again
-
-    return None, "Server Alert: Hugging Face's free video GPUs are completely maxed out globally right now. We tried aggressively waiting in line, but the queues are full. Please wait a few minutes and try again."
+                    if status_ui:
+                        status_ui.update(label=f"⏳ `{model_name}` is booting up. Holding the line...", state="running")
+                    time.sleep(15)
+                    resp_retry = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+                    if resp_retry.status_code == 200:
+                        return resp_retry.content, None
+            
+            except Exception:
+                pass # Ignore timeouts and instantly move to the next model
+            
+            attempt += 1
+            time.sleep(1.5) # Micro-pause to prevent HF from IP banning us for spamming
 
 
 def generate_tts_elevenlabs(script, voice_id, tone):
@@ -432,7 +441,7 @@ def render():
     # ── Tab 3: Text to Video ──────────────────────────────────────────────────
     with tabs[2]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">🎬 Text → Video (Free API)</span>', unsafe_allow_html=True)
+        st.markdown('<span class="mode-badge">🎬 Text → Video (Infinite Loop)</span>', unsafe_allow_html=True)
         
         t2v_prompt = st.text_area(
             "Scene Description",
@@ -493,21 +502,23 @@ def render():
                 with st.status("🎬 Processing Free Video Request...", expanded=True) as status:
                     final_prompt = t2v_prompt.strip()
                     if client:
-                        st.write("✨ Enhancing prompt...")
+                        status.update(label="✨ Enhancing prompt...", state="running")
                         final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-video")
                     
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
-                    video_data, v_err = generate_video_free(final_prompt)
+                    
+                    # Pass the status UI down so the infinite loop can update you live
+                    video_data, v_err = generate_video_free(final_prompt, status)
                     
                     audio_data = None
                     a_err = None
                     if use_script and t2v_script.strip() and get_elevenlabs_key():
-                        st.write("🎙️ Generating voiceover...")
+                        status.update(label="🎙️ Generating voiceover...", state="running")
                         voice_id = VOICE_AGENTS[gender][selected_voice]
                         audio_data, a_err = generate_tts_elevenlabs(t2v_script, voice_id, tone)
                     
                     if v_err:
-                        status.update(label="❌ All Servers Full", state="error")
+                        status.update(label="❌ Generation Error", state="error")
                         st.error(v_err)
                     else:
                         status.update(label="✅ Content ready!", state="complete")
@@ -532,7 +543,7 @@ def render():
     # ── Tab 4: Image to Video ─────────────────────────────────────────────────
     with tabs[3]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">📽️ Image → Video (Free Hack)</span>', unsafe_allow_html=True)
+        st.markdown('<span class="mode-badge">📽️ Image → Video (Infinite Loop)</span>', unsafe_allow_html=True)
         st.markdown("<p style='font-size:0.8rem;color:#ff6b6b;'>Note: The free tier API generates a new video based on your text description, not strictly locked to the image structure.</p>", unsafe_allow_html=True)
         
         i2v_upload = st.file_uploader("Upload image to animate",
@@ -557,12 +568,12 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required.")
             else:
-                with st.status("📽️ Animating your prompt via HF Cascade...", expanded=True) as status:
+                with st.status("📽️ Animating your prompt via Infinite Hammer...", expanded=True) as status:
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
-                    video_data, v_err = generate_video_free(i2v_prompt.strip())
+                    video_data, v_err = generate_video_free(i2v_prompt.strip(), status)
                     
                     if v_err:
-                        status.update(label="❌ All Servers Full", state="error")
+                        status.update(label="❌ Generation Error", state="error")
                         st.error(v_err)
                     else:
                         status.update(label="✅ Animated!", state="complete")
