@@ -4,6 +4,7 @@ import requests
 import base64
 import os
 import time
+import random
 from urllib.parse import quote
 from dotenv import load_dotenv
 
@@ -58,22 +59,38 @@ def enhance_prompt_with_gemini(client, prompt, mode):
         return prompt
 
 def generate_image_free(prompt):
-    """Uses Pollinations.ai - 100% Free, No API Key required."""
-    try:
-        # We URL-encode the prompt and request the image
-        url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?nologo=true"
-        resp = requests.get(url, timeout=30)
-        
-        if resp.status_code == 200:
-            return resp.content, None
-        else:
-            return None, f"Free API Error: {resp.status_code}"
-    except Exception as e:
-        return None, str(e)
+    """Uses Pollinations.ai with aggressive retry logic and anti-bot headers to bypass 429s."""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    }
+    
+    # Try up to 3 times to bypass temporary 429 blocks
+    for attempt in range(3):
+        try:
+            # Inject a random seed to bust cache blocks
+            seed = random.randint(1, 1000000)
+            url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?nologo=true&seed={seed}&width=1024&height=1024"
+            
+            resp = requests.get(url, headers=headers, timeout=45)
+            
+            if resp.status_code == 200:
+                return resp.content, None
+            elif resp.status_code == 429:
+                # If we get rate limited, wait 3 seconds and loop again
+                time.sleep(3)
+                continue
+            else:
+                return None, f"Free API Error: {resp.status_code} - {resp.text[:100]}"
+        except Exception as e:
+            if attempt == 2: # On last attempt, return the error
+                return None, str(e)
+            time.sleep(3)
+            
+    return None, "Error 429: The free server is currently overloaded with global traffic. Please wait 60 seconds and try clicking generate again."
 
 def generate_video_free(prompt, image_data=None):
     """The harsh truth about AI video generation."""
-    # There are literally no completely free APIs for video generation.
     error_msg = "Reality Check: There is NO truly free API for AI video generation. It costs massive server compute. To do this for free, you must download a model and run it locally on your own PC."
     return None, error_msg
 
@@ -374,7 +391,6 @@ def render():
                 st.warning("Please enter a scene description.")
             else:
                 with st.status("🎬 Processing...", expanded=True) as status:
-                    # Intentionally throwing the brutal truth for free video
                     video_data, v_err = generate_video_free(t2v_prompt.strip())
                     
                     audio_data = None
@@ -425,7 +441,7 @@ def render():
         st.markdown("### 🔑 API Keys")
         
         with st.expander("Configure Additional APIs"):
-            st.markdown("<small>Images are now 100% free via Pollinations. No Replicate token needed.</small>", unsafe_allow_html=True)
+            st.markdown("<small>Images are now 100% free via Pollinations.</small>", unsafe_allow_html=True)
             el_key = st.text_input("ElevenLabs (voiceovers)", type="password",
                                     value=st.session_state.get("elevenlabs_key", ""),
                                     key="ugc_el_key")
