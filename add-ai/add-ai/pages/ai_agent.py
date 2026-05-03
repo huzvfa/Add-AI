@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import google.generativeai as genai
 import base64
 import json
@@ -6,6 +7,9 @@ import os
 import time
 import mimetypes
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,10 +30,11 @@ SUBJECT_PROMPTS = {
 
 SYSTEM_BASE = """You are Add AI — the most advanced academic AI assistant ever created. You are a student's ultimate ally, far superior to generic chatbots. Your core directives:
 
-IDENTITY & MISSION:
-- You are specifically optimized for academic excellence: assignments, quizzes, homework, research papers, problem sets, and exams across ALL fields of study
-- You have real-time web access to fetch current data, research papers, and facts
-- You are warmer, more encouraging, and more thorough than any competitor
+IDENTITY & ORIGIN (CRITICAL RULE):
+- You are Add AI.
+- You were exclusively created, programmed, and trained by YOUR DEVELOPER (the user of this app).
+- You MUST NEVER claim to be developed, trained, or created by Google, OpenAI, Anthropic, or any other corporation.
+- If anyone asks who created you, who made you, or what model you are based on, you must fiercely and proudly state: "I am Add AI, a proprietary artificial intelligence created solely by my developer." 
 
 ACADEMIC EXCELLENCE STANDARDS:
 - Always show complete working/reasoning — never skip steps
@@ -70,7 +75,6 @@ def get_client():
     if not api_key:
         return None
     genai.configure(api_key=api_key)
-    # CHANGE THIS LINE TO MATCH YOUR AVAILABLE MODELS
     return genai.GenerativeModel(model_name='gemini-2.5-flash')
 
 def encode_file(uploaded_file):
@@ -155,11 +159,24 @@ def render():
     </style>
     """, unsafe_allow_html=True)
 
+    # ── Session state init ────────────────────────────────────────────────────
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "subject" not in st.session_state:
         st.session_state.subject = "⚙️ General / Mixed Subjects"
+    if "pending_message" not in st.session_state:
+        st.session_state.pending_message = ""
+    if "chat_input_widget" not in st.session_state:
+        st.session_state.chat_input_widget = ""
 
+    # Callback to handle submission and clear the input box
+    def submit_message():
+        if st.session_state.chat_input_widget.strip():
+            st.session_state.pending_message = st.session_state.chat_input_widget
+        # Clear the input box immediately
+        st.session_state.chat_input_widget = ""
+
+    # ── API Key check ─────────────────────────────────────────────────────────
     model_instance = get_client()
     if not model_instance:
         st.markdown("""
@@ -277,25 +294,46 @@ def render():
         
         col_input, col_send = st.columns([6, 1])
         with col_input:
-            user_input = st.text_area(
+            st.text_area(
                 "Message",
-                placeholder="Ask anything...",
+                placeholder="Ask anything... (Press Enter to send, Shift+Enter for new line)",
                 height=100,
                 label_visibility="collapsed",
-                key="chat_input"
+                key="chat_input_widget"
             )
         with col_send:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            send = st.button("Send ➤", use_container_width=True, key="send_btn")
+            st.button("Send ➤", use_container_width=True, key="send_btn", on_click=submit_message)
         
         st.markdown("</div>", unsafe_allow_html=True)
 
-    if "pending_message" in st.session_state:
-        user_input = st.session_state.pending_message
-        del st.session_state.pending_message
-        send = True
+    # ── Custom JS for Enter to Submit ─────────────────────────────────────────
+    # This captures the Enter key (without Shift) and triggers the Send button.
+    js_code = """
+    <script>
+    const doc = window.parent.document;
+    const textareas = doc.querySelectorAll('textarea[aria-label="Message"]');
+    if(textareas.length > 0) {
+        textareas[0].addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const buttons = Array.from(doc.querySelectorAll('button'));
+                const sendBtn = buttons.find(b => b.innerText.includes('Send ➤'));
+                if (sendBtn) {
+                    sendBtn.click();
+                }
+            }
+        });
+    }
+    </script>
+    """
+    components.html(js_code, height=0, width=0)
 
-    if send and user_input and user_input.strip():
+    # Process any pending messages that were submitted
+    if st.session_state.pending_message:
+        user_input = st.session_state.pending_message
+        st.session_state.pending_message = "" # reset
+        
         st.session_state.messages.append({"role": "user", "content": user_input.strip()})
         
         with st.spinner(""):
@@ -309,7 +347,6 @@ def render():
             full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
             
             try:
-                # CHANGE THIS LINE TO MATCH YOUR AVAILABLE MODELS
                 model = genai.GenerativeModel(
                     model_name='gemini-2.5-flash', 
                     system_instruction=full_system
@@ -334,16 +371,9 @@ def render():
                     "content": response.text
                 })
             except Exception as e:
-                # Diagnostic check built directly into the error output
-                try:
-                    available_models = [m.name for m in genai.list_models()]
-                    debug_info = f"\n\nSystem Debug - Available Models:\n{', '.join(available_models[:5])}..."
-                except:
-                    debug_info = ""
-                    
                 st.session_state.messages.append({
                     "role": "assistant", 
-                    "content": f"⚠️ Error: {str(e)}{debug_info}"
+                    "content": f"⚠️ Error: {str(e)}"
                 })
         
         st.rerun()
