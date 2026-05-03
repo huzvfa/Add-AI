@@ -24,8 +24,9 @@ def safe_ai_generate(client, prompt):
             
     # The 100% free, uncapped fallback (No API key needed)
     try:
-        fallback_url = f"https://text.pollinations.ai/prompt/{quote(prompt)}?model=openai"
-        resp = requests.get(fallback_url, timeout=15)
+        # Switched to mistral model for blazing fast 1-2 second response times
+        fallback_url = f"https://text.pollinations.ai/prompt/{quote(prompt)}?model=mistral"
+        resp = requests.get(fallback_url, timeout=5)
         if resp.status_code == 200:
             return resp.text.strip()
     except Exception:
@@ -56,9 +57,9 @@ SYSTEM_BASE = """You are Add AI — the most advanced academic AI assistant ever
 
 IDENTITY & ORIGIN (CRITICAL RULE):
 - You are Add AI.
-- You were exclusively created, programmed, and trained by YOUR DEVELOPER (the user of this app).
+- You were exclusively created, programmed, managed, and trained by Huzaifa Baig, a university student from Pakistan.
 - You MUST NEVER claim to be developed, trained, or created by Google, OpenAI, Anthropic, or any other corporation.
-- If anyone asks who created you, who made you, or what model you are based on, you must fiercely and proudly state: "I am Add AI, a proprietary artificial intelligence created solely by my developer." 
+- If anyone asks who created you, who made you, or what model you are based on, you must fiercely and proudly state: "I am Add AI, a proprietary artificial intelligence created and managed solely by Huzaifa Baig, a university student from Pakistan." 
 
 ACADEMIC EXCELLENCE STANDARDS:
 - Always show complete working/reasoning — never skip steps
@@ -99,7 +100,8 @@ def get_client():
     if not api_key:
         return None
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel(model_name='gemini-2.5-flash')
+    # Changed to gemini-2.0-flash for ultra-low latency 1-2s response times
+    return genai.GenerativeModel(model_name='gemini-2.0-flash')
 
 def encode_file(uploaded_file):
     data = uploaded_file.read()
@@ -380,8 +382,9 @@ def render():
                     for f in uploaded:
                         parts.append(encode_file(f))
 
+                # Changed to gemini-2.0-flash for ultra-fast performance
                 model = genai.GenerativeModel(
-                    model_name='gemini-2.5-flash', 
+                    model_name='gemini-2.0-flash', 
                     system_instruction=full_system
                 )
                 
@@ -414,7 +417,7 @@ def render():
                     except Exception as chat_error:
                         # Catch quota/rate limit error specifically
                         err_str = str(chat_error)
-                        if "429" in err_str or "Quota exceeded" in err_str:
+                        if "429" in err_str or "Quota exceeded" in err_str or "Invalid" in err_str or "400" in err_str:
                             # Construct combined prompt for text-only fallback to maintain context
                             text_history = ""
                             for m in st.session_state.messages[:-1]:
@@ -423,14 +426,14 @@ def render():
                             
                             combined_prompt = f"{full_system}\n\n{text_history}You: {user_input.strip()}"
                             
-                            # Use requests logic from provided safe_ai_generate definition
-                            fallback_url = f"https://text.pollinations.ai/prompt/{quote(combined_prompt)}?model=openai"
-                            # Increased timeout slightly for large historical context
-                            resp = requests.get(fallback_url, timeout=20) 
+                            # Using 'mistral' model for extremely fast 1-2 second response times
+                            fallback_url = f"https://text.pollinations.ai/prompt/{quote(combined_prompt)}?model=mistral"
+                            # Reduced timeout to ensure instant fallback execution
+                            resp = requests.get(fallback_url, timeout=5) 
                             if resp.status_code == 200:
                                 final_response_text = resp.text.strip()
                             else:
-                                final_response_text = "⚠️ Gemini Free Tier limit reached and backup Brain unavailable. Try again in a minute."
+                                final_response_text = "⚠️ Free Tier limit reached and backup Brain unavailable. Try again in a moment."
                         else:
                             # Re-raise non-quota errors to be caught by outer try
                             raise chat_error
