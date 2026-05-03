@@ -61,15 +61,17 @@ def enhance_prompt_with_gemini(client, prompt, mode):
         return prompt
 
 def generate_image_free(prompt):
-    """Uses a cascade of 100% Free, No-Key APIs to bypass 429 errors."""
+    """Uses a cascade of 100% Free, No-Key APIs and strictly validates that the response is an image."""
     encoded_prompt = quote(prompt)
     
     # Endpoint 1: Airforce API (Primary - Highly reliable Free Stable Diffusion)
     try:
         url1 = f"https://api.airforce/v1/imagine2?prompt={encoded_prompt}"
-        resp1 = requests.get(url1, timeout=20)
-        # Check if we got a valid image back
-        if resp1.status_code == 200 and len(resp1.content) > 1000:
+        resp1 = requests.get(url1, timeout=30)
+        content_type1 = resp1.headers.get('Content-Type', '').lower()
+        
+        # CRITICAL FIX: Only accept the response if it is confirmed to be an image format
+        if resp1.status_code == 200 and 'image' in content_type1:
             return resp1.content, None
     except:
         pass # Silently fail over to the next endpoint
@@ -79,16 +81,20 @@ def generate_image_free(prompt):
         seed = random.randint(1, 100000)
         url2 = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&nologo=true"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/*'
         }
-        resp2 = requests.get(url2, headers=headers, timeout=20)
-        if resp2.status_code == 200 and len(resp2.content) > 1000:
+        resp2 = requests.get(url2, headers=headers, timeout=30)
+        content_type2 = resp2.headers.get('Content-Type', '').lower()
+        
+        # CRITICAL FIX: Validation check to prevent Streamlit from crashing on HTML/Error pages
+        if resp2.status_code == 200 and 'image' in content_type2:
             return resp2.content, None
     except:
         pass
 
-    # If both fail, return the final error
-    return None, "Error 429: Both primary and backup free image servers are currently overloaded with global traffic. Please wait a moment and hit generate again."
+    # If both fail or return HTML/JSON error pages instead of images, gracefully return a text error
+    return None, "Server Overload: Both primary and backup free image servers are currently overloaded and unable to generate your image. Please wait a few seconds and try again."
 
 def generate_video_free(prompt, image_data=None):
     """The harsh truth about AI video generation."""
@@ -284,7 +290,7 @@ def render():
                     
                     if err:
                         status.update(label="❌ Generation failed", state="error")
-                        st.error(f"Error: {err}")
+                        st.error(err)
                     else:
                         status.update(label="✅ Image ready!", state="complete")
                         st.markdown('<div class="output-frame">', unsafe_allow_html=True)
@@ -323,7 +329,7 @@ def render():
                     
                     if err:
                         status.update(label="❌ Failed", state="error")
-                        st.error(f"Error: {err}")
+                        st.error(err)
                     else:
                         status.update(label="✅ Generated!", state="complete")
                         st.markdown('<div class="output-frame">', unsafe_allow_html=True)
