@@ -42,18 +42,15 @@ TONE_DESCRIPTIONS = {
 
 def get_key(env_var_name, session_state_name):
     """Aggressively checks for keys across Sidebar, Streamlit Secrets, and .env"""
-    # 1. Check sidebar (session state)
     if st.session_state.get(session_state_name):
         return st.session_state[session_state_name]
     
-    # 2. Check Streamlit Cloud Secrets
     try:
         if env_var_name in st.secrets:
             return st.secrets[env_var_name]
     except Exception:
         pass
         
-    # 3. Check local .env / OS environment variables
     return os.environ.get(env_var_name, "")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,36 +74,47 @@ def enhance_prompt_with_gemini(client, prompt, mode):
         return prompt
 
 def generate_image_hf(prompt):
-    """Uses Hugging Face's 100% Free Inference API with Stable Diffusion XL."""
+    """Uses a Model Cascade on Hugging Face to bypass 404/removed models."""
     hf_token = get_key("HF_TOKEN", "hf_token")
     
     if not hf_token:
         return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar or Streamlit Secrets."
     
-    API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+    # HF constantly rotates free models. We cascade through the top reliable ones.
+    models_to_try = [
+        "black-forest-labs/FLUX.1-schnell",
+        "stabilityai/stable-diffusion-3.5-large",
+        "runwayml/stable-diffusion-v1-5"
+    ]
+    
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {"inputs": prompt}
+    last_error = ""
     
-    try:
-        resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-        
-        if resp.status_code == 200:
-            if 'image' in resp.headers.get('Content-Type', '').lower():
-                return resp.content, None
-            else:
-                return None, "API returned non-image data. Please try again."
-        elif resp.status_code == 503:
-            # Hugging Face unloads models when not in use. This handles the warm-up period safely.
-            try:
-                estimated_time = resp.json().get('estimated_time', 30)
-                return None, f"⏳ The free server is warming up the model. Please wait {int(estimated_time)} seconds and click Generate again."
-            except:
-                return None, "⏳ The free server is warming up. Please wait 30 seconds and try again."
-        else:
-            return None, f"Hugging Face API Error {resp.status_code}: {resp.text}"
+    for model in models_to_try:
+        API_URL = f"https://api-inference.huggingface.co/models/{model}"
+        try:
+            resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
             
-    except Exception as e:
-        return None, str(e)
+            if resp.status_code == 200:
+                if 'image' in resp.headers.get('Content-Type', '').lower():
+                    return resp.content, None
+            elif resp.status_code == 503:
+                # Hugging Face unloads models when not in use. This handles the warm-up period safely.
+                try:
+                    estimated_time = resp.json().get('estimated_time', 20)
+                    return None, f"⏳ The free server ({model}) is waking up. Please wait {int(estimated_time)} seconds and click Generate again."
+                except:
+                    return None, f"⏳ The free server ({model}) is waking up. Please wait 20 seconds and try again."
+            else:
+                last_error = f"API Error {resp.status_code} on {model}: {resp.text}"
+                continue # Model failed (e.g. 404), instantly try the next one
+                
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    return None, f"All free Hugging Face models failed. Last error: {last_error}"
 
 def generate_video_free(prompt, image_data=None):
     """The harsh truth about AI video generation."""
@@ -297,7 +305,7 @@ def render():
                             f"[Style: {t2i_style}] {final_prompt}", "text-image")
                         st.write(f"📝 Enhanced: *{final_prompt[:100]}...*")
                     
-                    st.write("🖼️ Generating high-quality SDXL image...")
+                    st.write("🖼️ Generating high-quality image...")
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     
                     img_data, err = generate_image_hf(final_prompt)
