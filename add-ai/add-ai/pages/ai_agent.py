@@ -4,9 +4,10 @@ import base64
 import json
 import os
 import time
-import requests
+import mimetypes
 from pathlib import Path
 from dotenv import load_dotenv
+import requests
 from urllib.parse import quote
 
 load_dotenv()
@@ -67,59 +68,15 @@ FORMATTING:
 
 Always be the best academic tutor a student has ever had."""
 
-def encode_file(uploaded_file):
-    """Extracts text from uploaded files to feed into the free AI engine."""
-    data = uploaded_file.read()
-    uploaded_file.seek(0)
+def extract_text_from_file(uploaded_file):
+    """Safely extracts text from uploaded code, txt, or data files for the free API."""
     try:
-        text_data = data.decode('utf-8')
-        return f"\n\n--- File Content: {uploaded_file.name} ---\n{text_data}\n--- End of File ---\n"
+        data = uploaded_file.read().decode('utf-8')
+        uploaded_file.seek(0)
+        return f"\n\n--- File: {uploaded_file.name} ---\n{data}\n--- End of File ---\n"
     except Exception:
-        return f"\n\n--- File: {uploaded_file.name} (Binary format detected. I can only read text/code files) ---\n"
-
-def chat_with_free_ai(system_prompt, messages_history, new_message_text):
-    """
-    Invincible 3-Tier Free Routing Engine. 
-    100% Free, NO Quotas, NO API Keys, 1-2s Response Time.
-    """
-    api_messages = [{"role": "system", "content": system_prompt}]
-    for m in messages_history:
-        api_messages.append({"role": m["role"], "content": m["content"]})
-    api_messages.append({"role": "user", "content": new_message_text})
-
-    payload = {
-        "messages": api_messages,
-        "model": "mistral", # Hardcoded to mistral for blazing fast 1-2s responses
-        "temperature": 0.5
-    }
-
-    # ATTEMPT 1: OpenAI-compatible endpoint (Fastest, cleanest JSON parsing)
-    try:
-        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=10)
-        if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception:
-        pass
-
-    # ATTEMPT 2: Raw Text endpoint (Bypass JSON completely if server is acting up)
-    try:
-        resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=10)
-        if resp.status_code == 200:
-            return resp.text.strip()
-    except Exception:
-        pass
-
-    # ATTEMPT 3: Direct GET Request (Bulletproof fallback for pure text queries)
-    try:
-        short_prompt = new_message_text[:1500] 
-        url = f"https://text.pollinations.ai/{quote(short_prompt)}?model=mistral"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            return resp.text.strip()
-    except Exception:
-        pass
-
-    return "⚠️ CRITICAL SERVER ALERT: The global free AI network is currently completely unresponsive. Please wait 15 seconds and try sending your message again."
+        uploaded_file.seek(0)
+        return f"\n\n--- File: {uploaded_file.name} (Binary/Image format - please describe the contents as I am a text-only agent) ---\n"
 
 def render():
     # ── Header ────────────────────────────────────────────────────────────────
@@ -359,22 +316,48 @@ def render():
             
             full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
             
-            final_user_input = user_input.strip()
-            if uploaded:
-                for f in uploaded:
-                    final_user_input += encode_file(f)
+            try:
+                # Compile the full user prompt with any uploaded text files
+                final_user_input = user_input.strip()
+                if uploaded:
+                    for f in uploaded:
+                        final_user_input += extract_text_from_file(f)
 
-            # Fire the request to the invincible free routing engine
-            final_response_text = chat_with_free_ai(
-                system_prompt=full_system,
-                messages_history=st.session_state.messages[:-1],
-                new_message_text=final_user_input
-            )
-            
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": final_response_text
-            })
+                # Format messages for the completely free open-source routing API
+                api_messages = [{"role": "system", "content": full_system}]
+                
+                # Append chat history
+                for m in st.session_state.messages[:-1]:
+                    api_messages.append({"role": m["role"], "content": m["content"]})
+                
+                # Append the latest user message with files included
+                api_messages.append({"role": "user", "content": final_user_input})
+
+                # Call the 100% Free API (Requires NO API key, completely bypasses Google)
+                # Hardcoded to 'mistral' for blazing fast 1-2 second responses
+                payload = {
+                    "messages": api_messages,
+                    "model": "mistral",
+                    "jsonMode": False
+                }
+                
+                # Using the core text generation endpoint
+                resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=15)
+                
+                if resp.status_code == 200:
+                    final_response_text = resp.text.strip()
+                else:
+                    final_response_text = f"⚠️ Free API Error ({resp.status_code}): Servers are experiencing high load. Please try again."
+                
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": final_response_text
+                })
+            except Exception as e:
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": f"⚠️ Network Error: Unable to reach the free AI servers. Please check your connection."
+                })
         
         st.rerun()
     
