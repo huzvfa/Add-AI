@@ -70,8 +70,8 @@ def get_client():
     if not api_key:
         return None
     genai.configure(api_key=api_key)
-    # FORCING explicit version 002 to bypass alias 404 bugs
-    return genai.GenerativeModel(model_name='gemini-1.5-flash-002')
+    # CHANGE THIS LINE TO MATCH YOUR AVAILABLE MODELS
+    return genai.GenerativeModel(model_name='gemini-2.5-flash')
 
 def encode_file(uploaded_file):
     data = uploaded_file.read()
