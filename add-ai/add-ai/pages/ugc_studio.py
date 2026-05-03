@@ -6,6 +6,9 @@ import os
 import time
 import json
 from io import BytesIO
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── Voice Agents ─────────────────────────────────────────────────────────────
 
@@ -41,7 +44,6 @@ def get_gemini_client():
     key = os.environ.get("GOOGLE_API_KEY") or st.session_state.get("google_key", "")
     if key:
         genai.configure(api_key=key)
-        # CHANGE THIS LINE TO MATCH YOUR AVAILABLE MODELS
         return genai.GenerativeModel(model_name='gemini-2.5-flash')
     return None
 
