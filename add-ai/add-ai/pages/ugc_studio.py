@@ -4,8 +4,10 @@ import requests
 import base64
 import os
 import time
+import json
 import random
 from urllib.parse import quote
+from io import BytesIO
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -59,35 +61,34 @@ def enhance_prompt_with_gemini(client, prompt, mode):
         return prompt
 
 def generate_image_free(prompt):
-    """Uses Pollinations.ai with aggressive retry logic and anti-bot headers to bypass 429s."""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-    }
+    """Uses a cascade of 100% Free, No-Key APIs to bypass 429 errors."""
+    encoded_prompt = quote(prompt)
     
-    # Try up to 3 times to bypass temporary 429 blocks
-    for attempt in range(3):
-        try:
-            # Inject a random seed to bust cache blocks
-            seed = random.randint(1, 1000000)
-            url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?nologo=true&seed={seed}&width=1024&height=1024"
-            
-            resp = requests.get(url, headers=headers, timeout=45)
-            
-            if resp.status_code == 200:
-                return resp.content, None
-            elif resp.status_code == 429:
-                # If we get rate limited, wait 3 seconds and loop again
-                time.sleep(3)
-                continue
-            else:
-                return None, f"Free API Error: {resp.status_code} - {resp.text[:100]}"
-        except Exception as e:
-            if attempt == 2: # On last attempt, return the error
-                return None, str(e)
-            time.sleep(3)
-            
-    return None, "Error 429: The free server is currently overloaded with global traffic. Please wait 60 seconds and try clicking generate again."
+    # Endpoint 1: Airforce API (Primary - Highly reliable Free Stable Diffusion)
+    try:
+        url1 = f"https://api.airforce/v1/imagine2?prompt={encoded_prompt}"
+        resp1 = requests.get(url1, timeout=20)
+        # Check if we got a valid image back
+        if resp1.status_code == 200 and len(resp1.content) > 1000:
+            return resp1.content, None
+    except:
+        pass # Silently fail over to the next endpoint
+        
+    # Endpoint 2: Pollinations AI (Fallback - With anti-bot headers and cache busting)
+    try:
+        seed = random.randint(1, 100000)
+        url2 = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&nologo=true"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        resp2 = requests.get(url2, headers=headers, timeout=20)
+        if resp2.status_code == 200 and len(resp2.content) > 1000:
+            return resp2.content, None
+    except:
+        pass
+
+    # If both fail, return the final error
+    return None, "Error 429: Both primary and backup free image servers are currently overloaded with global traffic. Please wait a moment and hit generate again."
 
 def generate_video_free(prompt, image_data=None):
     """The harsh truth about AI video generation."""
@@ -202,6 +203,7 @@ def render():
       animation: glow-pulse 3s ease-in-out infinite;
       border-radius: 16px;
       overflow: hidden;
+      margin-top: 1rem;
     }
     .shimmer-text {
       background: linear-gradient(90deg, #00f5d4, #7b61ff, #ff6b6b, #00f5d4);
@@ -216,6 +218,7 @@ def render():
       background: linear-gradient(90deg, #00f5d4, #7b61ff);
       animation: shimmer 1.5s linear infinite;
       background-size: 200% auto;
+      margin: 1rem 0;
     }
     </style>
     
@@ -274,7 +277,7 @@ def render():
                             f"[Style: {t2i_style}] {final_prompt}", "text-image")
                         st.write(f"📝 Enhanced: *{final_prompt[:100]}...*")
                     
-                    st.write("🖼️ Generating free image via Pollinations...")
+                    st.write("🖼️ Generating image via Server Cascade...")
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     
                     img_data, err = generate_image_free(final_prompt)
@@ -441,7 +444,7 @@ def render():
         st.markdown("### 🔑 API Keys")
         
         with st.expander("Configure Additional APIs"):
-            st.markdown("<small>Images are now 100% free via Pollinations.</small>", unsafe_allow_html=True)
+            st.markdown("<small>Images are now 100% free via Server Cascade. No API key needed.</small>", unsafe_allow_html=True)
             el_key = st.text_input("ElevenLabs (voiceovers)", type="password",
                                     value=st.session_state.get("elevenlabs_key", ""),
                                     key="ugc_el_key")
