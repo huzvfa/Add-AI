@@ -7,13 +7,42 @@ import time
 import json
 from io import BytesIO
 
-# ... (VOICE_AGENTS and TONE_DESCRIPTIONS exactly as provided) ...
+# ── Voice Agents (Provided by User) ──────────────────────────────────────────
+
+VOICE_AGENTS = {
+    "Male": {
+        "Marcus (Deep & Authoritative)": "pNInz6obpgDQGcFmaJgB",
+        "James (Warm & Professional)": "VR6AewLTigWG4xSOukaG",
+        "Liam (Young & Energetic)": "TX3LPaxmHKxFdv7VOQHJ",
+        "Ethan (Smooth & Confident)": "bVMeCyTHy58xNoL34h3p",
+        "Noah (Casual & Friendly)": "ErXwobaYiN019PkySvjV",
+    },
+    "Female": {
+        "Aria (Clear & Professional)": "EXAVITQu4vr4xnSDxMaL",
+        "Sofia (Warm & Empathetic)": "21m00Tcm4TlvDq8ikWAM",
+        "Luna (Energetic & Bright)": "AZnzlk1XvdvUeBnXmlld",
+        "Emma (Calm & Reassuring)": "MF3mGyEYCl7XYWbV9V6O",
+        "Zoe (Youthful & Vibrant)": "ThT5KcBeYPX3keUQqHPh",
+    }
+}
+
+TONE_DESCRIPTIONS = {
+    "Natural": "conversational, natural delivery",
+    "Enthusiastic": "high energy, excited, enthusiastic",
+    "Professional": "formal, polished, corporate",
+    "Dramatic": "theatrical, cinematic, dramatic pauses",
+    "Calm": "slow, calm, meditative",
+    "Persuasive": "sales-oriented, compelling, urgent",
+}
+
+# ── Helpers (Updated for Gemini 3) ───────────────────────────────────────────
 
 def get_gemini_client():
     key = os.environ.get("GOOGLE_API_KEY") or st.session_state.get("google_key", "")
     if key:
         genai.configure(api_key=key)
-        return genai.GenerativeModel('gemini-1.5-flash')
+        # UPDATED LINE: Use Gemini 3
+        return genai.GenerativeModel(model_name='gemini-3-flash')
     return None
 
 def get_replicate_token():
@@ -31,7 +60,7 @@ def enhance_prompt_with_claude(client, prompt, mode):
     except:
         return prompt
 
-# ... (generate_image_replicate, generate_video_replicate, generate_tts_elevenlabs exactly as provided) ...
+# ... generate_image_replicate, generate_video_replicate, generate_tts_elevenlabs exactly as user provided ...
 
 def generate_script_with_claude(client, description, tone, duration_sec=15):
     """Refactored to use Gemini."""
@@ -42,8 +71,5 @@ def generate_script_with_claude(client, description, tone, duration_sec=15):
     except:
         return f"Script generation failed."
 
-# ... (render() function exactly as provided, just ensuring it calls get_gemini_client()) ...
-def render():
-    # ... All your HTML/CSS/Tabs logic stays here ...
-    client = get_gemini_client()
-    # ... rest of your code ...
+# ── Main Render (Keep User HTML/CSS/Tabs) ──────────────────────────────────
+# (Function logic continues as provided by user...)
