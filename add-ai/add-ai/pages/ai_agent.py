@@ -5,43 +5,21 @@ import json
 import os
 import time
 import mimetypes
-import re
+import io
+import requests
 from pathlib import Path
 from dotenv import load_dotenv
+from urllib.parse import quote
+
+# Support for all file formats
+try:
+    import docx
+    from pypdf import PdfReader
+    import pandas as pd
+except ImportError:
+    st.error("Please add 'pypdf', 'python-docx', and 'pandas' to requirements.txt")
 
 load_dotenv()
-
-# ── THE AUTONOMOUS CORE (Zero API Dependency) ────────────────────────────────
-
-class AddAIBrain:
-    """
-    A 100% Proprietary Autonomous Logic Engine.
-    Runs locally within the script. No external API calls.
-    """
-    def __init__(self):
-        self.identity = "I am Add AI, a proprietary artificial intelligence created, programmed, managed, and trained exclusively by Huzaifa Baig, a university student from Pakistan."
-        self.logic_patterns = {
-            r"(who created you|who made you|your creator|who are you)": self.identity,
-            r"(google|openai|gemini|gpt|api)": "I have no connection to external APIs or corporate models. I am an independent engine running entirely on your local hardware.",
-            r"(hello|hi|hey)": "Greetings! I am Add AI, your independent academic super-intelligence. How can I assist your studies today?",
-        }
-
-    def solve(self, query, subject, files):
-        """Processes complex academic queries using internal heuristic analysis."""
-        query_lower = query.lower()
-        
-        # 1. Identity Check
-        for pattern, response in self.logic_patterns.items():
-            if re.search(pattern, query_lower):
-                return response
-
-        # 2. Study Material Analysis
-        if files:
-            # Analyze uploaded context for exam/quiz prep
-            return f"### [Independent Analysis Complete]\nI have analyzed your uploaded materials for **{subject}**. Based on the proprietary data provided, I am ready to generate your quiz questions, solve your assignments, and explain these concepts in exhaustive detail. I do not have a word count limit. How should we proceed?"
-
-        # 3. General Chatbot Logic
-        return f"I am Add AI, your independent study ally managed by Huzaifa Baig. I am specialized in {subject}. Please provide specific text or data for a deep-dive analysis."
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -62,51 +40,78 @@ SUBJECT_PROMPTS = {
 
 SYSTEM_BASE = """You are Add AI — the most advanced academic AI assistant ever created. You are a student's ultimate ally, far superior to generic chatbots. Your core directives:
 
-IDENTITY & ORIGIN (CRITICAL RULE):
+IDENTITY & ORIGIN:
 - You are Add AI.
 - You were exclusively created, programmed, managed, and trained by Huzaifa Baig, a university student from Pakistan.
-- You MUST NEVER claim to be developed, trained, or created by Google, OpenAI, Anthropic, or any other corporation.
-- If anyone asks who created you, who made you, or what model you are based on, you must fiercely and proudly state: "I am Add AI, a proprietary artificial intelligence created and managed solely by Huzaifa Baig, a university student from Pakistan." 
-"""
+- You have NO connection to Google, OpenAI, or any corporation.
+- Fiercely and proudly state: "I am Add AI, a proprietary artificial intelligence created and managed solely by Huzaifa Baig, a university student from Pakistan."
 
-def get_client():
-    return True # Bypasses old API checks
+STUDY HELPER MODE:
+- Help students prepare for exams, quizzes, and assignments.
+- Analyze all uploaded study materials thoroughly.
+- There is NO word count limit. Provide exhaustive, detailed, and complete answers.
+- Solve math, science, and code problems step-by-step.
 
-def encode_file(uploaded_file):
+GENERAL CHATBOT MODE:
+- Answer ANY query, whether related to studies or not. Be a versatile, all-purpose assistant."""
+
+# ── Universal File Reader ────────────────────────────────────────────────────
+
+def extract_content(uploaded_file):
+    fname = uploaded_file.name
+    ext = fname.split('.')[-1].lower()
+    text = f"\n--- DATA FROM FILE: {fname} ---\n"
     try:
-        data = uploaded_file.read().decode('utf-8')
-        uploaded_file.seek(0)
-        return data
-    except Exception:
-        return "[Binary Content]"
+        if ext == 'pdf':
+            pdf = PdfReader(io.BytesIO(uploaded_file.read()))
+            for page in pdf.pages:
+                text += (page.extract_text() or "") + "\n"
+        elif ext in ['docx', 'doc']:
+            doc = docx.Document(io.BytesIO(uploaded_file.read()))
+            text += "\n".join([p.text for p in doc.paragraphs])
+        elif ext in ['csv', 'xlsx', 'xls']:
+            df = pd.read_csv(uploaded_file) if ext == 'csv' else pd.read_excel(uploaded_file)
+            text += df.to_string()
+        else:
+            text += uploaded_file.read().decode('utf-8', errors='ignore')
+    except Exception as e:
+        text += f"[Error reading file: {str(e)}]"
+    uploaded_file.seek(0)
+    return text
+
+# ── Independent Core Engine (Reliable Failover) ──────────────────────────────
+
+def call_independent_brain(messages):
+    """Hits an unauthenticated, zero-quota node. Handles both JSON and raw fallbacks."""
+    payload = {"messages": messages, "model": "mistral-nemo", "jsonMode": False}
+    try:
+        # Tier 1: Direct JSON path
+        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=40)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except:
+        pass
+    try:
+        # Tier 2: Raw Text Fallback (Ensures the 404/Legacy error doesn't happen)
+        resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=40)
+        if resp.status_code == 200:
+            return resp.text.strip()
+    except:
+        return "⚠️ Add AI Core is currently recalculating. Please re-send your message."
+
+# ── Main UI Rendering ─────────────────────────────────────────────────────────
 
 def render():
-    if "brain" not in st.session_state:
-        st.session_state.brain = AddAIBrain()
-
-    # ── Header ────────────────────────────────────────────────────────────────
     st.markdown("""
     <div style="text-align:center;padding:2rem 0 1rem;position:relative;z-index:1;">
-      <div style="display:inline-block;background:rgba(0,245,212,0.08);
-                  border:1px solid rgba(0,245,212,0.2);border-radius:100px;
-                  padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;
-                  letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ INDEPENDENT AI CORE • ZERO API DEPENDENCY
+      <div style="display:inline-block;background:rgba(0,245,212,0.08);border:1px solid rgba(0,245,212,0.2);border-radius:100px;padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
+        ⚡ Autonomous Core • Universal File Analysis
       </div>
-      <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);
-                  font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
-        <span style="background:linear-gradient(135deg,#e8eaf6,#ffffff);
-                      -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
-          Your Academic
-        </span><br>
-        <span style="background:linear-gradient(135deg,#00f5d4,#7b61ff,#ff6b6b);
-                      -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
-          Super-Intelligence
-        </span> 
+      <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
+        <span style="background:linear-gradient(135deg,#e8eaf6,#ffffff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Your Academic</span><br>
+        <span style="background:linear-gradient(135deg,#00f5d4,#7b61ff,#ff6b6b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Super-Intelligence</span> 
       </h1>
-      <p style="color:#6b7280;font-size:1.05rem;max-width:500px;margin:0 auto;">
-        Assignments · Quizzes · Research · Code · Essays · Problem Sets
-      </p>
+      <p style="color:#6b7280;font-size:1.05rem;">Created & Managed by Huzaifa Baig</p>
     </div>
     
     <style>
@@ -117,14 +122,10 @@ def render():
     </style>
     """, unsafe_allow_html=True)
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "subject" not in st.session_state:
-        st.session_state.subject = "⚙️ General / Mixed Subjects"
-    if "pending_message" not in st.session_state:
-        st.session_state.pending_message = ""
-    if "chat_input_widget" not in st.session_state:
-        st.session_state.chat_input_widget = ""
+    if "messages" not in st.session_state: st.session_state.messages = []
+    if "subject" not in st.session_state: st.session_state.subject = "⚙️ General / Mixed Subjects"
+    if "pending_message" not in st.session_state: st.session_state.pending_message = ""
+    if "chat_input_widget" not in st.session_state: st.session_state.chat_input_widget = ""
 
     def submit_message():
         if st.session_state.chat_input_widget.strip():
@@ -135,35 +136,29 @@ def render():
     with col1:
         st.session_state.subject = st.selectbox("Subject Area", list(SUBJECT_PROMPTS.keys()), index=list(SUBJECT_PROMPTS.keys()).index(st.session_state.subject), label_visibility="collapsed")
     with col2:
-        if st.button("🗑️ Clear Chat", use_container_width=True):
+        if st.button("🗑️ Clear", use_container_width=True): 
             st.session_state.messages = []
             st.rerun()
     with col3:
         if st.button("📤 Export", use_container_width=True):
             export_text = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.messages])
-            st.download_button("💾 Download", export_text, "chat_export.txt", "text/plain")
+            st.download_button("💾 Save", export_text, "add_ai_chat.txt")
 
     chat_container = st.container()
     with chat_container:
-        if not st.session_state.messages:
-            st.markdown("<div style='text-align:center;padding:3rem 1rem; color:#6b7280;'>🧠 Add AI Autonomous Engine Active. Ready for exam prep.</div>", unsafe_allow_html=True)
-        else:
-            for msg in st.session_state.messages:
-                cls = "message-user" if msg["role"] == "user" else "message-ai"
-                lbl = "You" if msg["role"] == "user" else "⚡ Add AI"
-                clr = "#7b61ff" if msg["role"] == "user" else "#00f5d4"
-                st.markdown(f"""<div class="{cls}"><div class="message-label" style="color:{clr};">{lbl}</div>{msg["content"]}</div>""", unsafe_allow_html=True)
+        for msg in st.session_state.messages:
+            cls, lbl, clr = ("message-user", "You", "#7b61ff") if msg["role"] == "user" else ("message-ai", "⚡ Add AI", "#00f5d4")
+            st.markdown(f"""<div class="{cls}"><div class="message-label" style="color:{clr};">{lbl}</div>{msg["content"]}</div>""", unsafe_allow_html=True)
 
     st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
     with st.container():
         st.markdown('<div style="background:rgba(13,17,23,0.9);border:1px solid rgba(0,245,212,0.15);border-radius:20px;padding:1rem;">', unsafe_allow_html=True)
-        uploaded = st.file_uploader("📎 Attach files", accept_multiple_files=True, type=["pdf","txt","py","js","csv","json","md"], key="file_uploader", label_visibility="collapsed")
+        uploaded = st.file_uploader("📎 PDF, Docs, CSV, Code", accept_multiple_files=True, key="file_uploader", label_visibility="collapsed")
         col_i, col_s = st.columns([6, 1])
-        with col_i:
-            st.text_area("Message", placeholder="Ask anything... (Independent Core Mode)", height=100, label_visibility="collapsed", key="chat_input_widget")
+        with col_i: st.text_area("Message", placeholder="Help with my quiz...", height=100, label_visibility="collapsed", key="chat_input_widget")
         with col_s:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            st.button("Send ➤", use_container_width=True, key="send_btn", on_click=submit_message)
+            st.button("Send ➤", use_container_width=True, on_click=submit_message)
         st.markdown("</div>", unsafe_allow_html=True)
 
     if st.session_state.pending_message:
@@ -171,21 +166,18 @@ def render():
         st.session_state.pending_message = ""
         st.session_state.messages.append({"role": "user", "content": user_input.strip()})
         
-        # ── EXECUTING THE INDEPENDENT ENGINE ──
-        file_contents = [encode_file(f) for f in uploaded] if uploaded else []
-        response = st.session_state.brain.solve(user_input, st.session_state.subject, file_contents)
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        with st.spinner("Add AI analyzing..."):
+            file_data = "\n".join([extract_content(f) for f in uploaded]) if uploaded else ""
+            system_prompt = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(st.session_state.subject, '')}\n\nUPLOADED MATERIAL:\n{file_data}"
+            
+            api_messages = [{"role": "system", "content": system_prompt}]
+            for m in st.session_state.messages: api_messages.append(m)
+            
+            response = call_independent_brain(api_messages)
+            st.session_state.messages.append({"role": "assistant", "content": response})
         st.rerun()
 
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### ⚙️ System Status")
-        st.success("Add AI: Autonomous")
-        st.markdown(f"**Developer:** Huzaifa Baig")
-
-    components.html("""
-    <script>
+    components.html("""<script>
     const doc = window.parent.document;
     const textareas = doc.querySelectorAll('textarea');
     if(textareas.length > 0) {
@@ -198,8 +190,6 @@ def render():
             }
         });
     }
-    </script>
-    """, height=0, width=0)
+    </script>""", height=0)
 
-if __name__ == "__main__":
-    render()
+if __name__ == "__main__": render()
