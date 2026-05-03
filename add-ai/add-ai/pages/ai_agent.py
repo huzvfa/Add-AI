@@ -309,9 +309,9 @@ def render():
             full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
             
             try:
-                # Initialize with explicit 002 model string
+                # CHANGE THIS LINE TO MATCH YOUR AVAILABLE MODELS
                 model = genai.GenerativeModel(
-                    model_name='gemini-1.5-flash-002', 
+                    model_name='gemini-2.5-flash', 
                     system_instruction=full_system
                 )
                 
