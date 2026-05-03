@@ -1,5 +1,5 @@
 import streamlit as st
-import anthropic
+import google.generativeai as genai
 import base64
 import json
 import os
@@ -28,7 +28,7 @@ SYSTEM_BASE = """You are Add AI — the most advanced academic AI assistant ever
 
 IDENTITY & MISSION:
 - You are specifically optimized for academic excellence: assignments, quizzes, homework, research papers, problem sets, and exams across ALL fields of study
-- You have real-time web access via Anthropic's tools to fetch current data, research papers, and facts
+- You have real-time web access to fetch current data, research papers, and facts
 - You are warmer, more encouraging, and more thorough than any competitor
 
 ACADEMIC EXCELLENCE STANDARDS:
@@ -61,85 +61,22 @@ FORMATTING:
 - Make responses visually scannable and well-organized
 - Use LaTeX-style notation for math when possible: $E = mc^2$
 
-You have access to web search. Use it proactively for:
-- Current events and recent research
-- Factual verification
-- Finding relevant examples and case studies
-- Statistical data
-
 Always be the best academic tutor a student has ever had."""
 
 def get_client():
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
-        api_key = st.session_state.get("anthropic_key", "")
+        api_key = st.session_state.get("google_key", "")
     if not api_key:
         return None
-    return anthropic.Anthropic(api_key=api_key)
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel('gemini-1.5-flash')
 
-def encode_file(uploaded_file):
-    """Encode uploaded file to base64 and detect type."""
+def encode_file_for_gemini(uploaded_file):
+    """Gemini specific file handling."""
     data = uploaded_file.read()
-    b64 = base64.standard_b64encode(data).decode("utf-8")
     uploaded_file.seek(0)
-    mime = uploaded_file.type or mimetypes.guess_type(uploaded_file.name)[0] or "application/octet-stream"
-    return b64, mime, len(data)
-
-def build_content_blocks(text_prompt, uploaded_files):
-    """Build Anthropic-compatible content blocks from text + files."""
-    blocks = []
-    
-    if uploaded_files:
-        for f in uploaded_files:
-            b64, mime, size = encode_file(f)
-            if mime.startswith("image/"):
-                blocks.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": mime, "data": b64}
-                })
-            elif mime == "application/pdf":
-                blocks.append({
-                    "type": "document",
-                    "source": {"type": "base64", "media_type": "application/pdf", "data": b64}
-                })
-            else:
-                # Try to decode as text
-                try:
-                    text_content = base64.b64decode(b64).decode("utf-8")
-                    blocks.append({
-                        "type": "text",
-                        "text": f"[File: {f.name}]\n```\n{text_content[:50000]}\n```"
-                    })
-                except Exception:
-                    blocks.append({
-                        "type": "text",
-                        "text": f"[Binary file uploaded: {f.name} ({size} bytes) — type: {mime}]"
-                    })
-    
-    blocks.append({"type": "text", "text": text_prompt})
-    return blocks
-
-def stream_response(client, messages, system_prompt, subject):
-    """Stream a response from Claude with web search tool."""
-    full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, SUBJECT_PROMPTS['⚙️ General / Mixed Subjects'])}"
-    
-    tools = [{"type": "web_search_20250305", "name": "web_search"}]
-    
-    with client.messages.stream(
-        model="claude-sonnet-4-5",
-        max_tokens=8000,
-        system=full_system,
-        messages=messages,
-        tools=tools,
-    ) as stream:
-        full_text = ""
-        for text in stream.text_stream:
-            full_text += text
-            yield text
-    
-    return full_text
-
-# ── Main Render ───────────────────────────────────────────────────────────────
+    return {"mime_type": uploaded_file.type, "data": data}
 
 def render():
     # ── Header ────────────────────────────────────────────────────────────────
@@ -149,18 +86,18 @@ def render():
                   border:1px solid rgba(0,245,212,0.2);border-radius:100px;
                   padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;
                   letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ Real-time AI • Powered by Claude 3.7
+        ⚡ Real-time AI • Powered by Gemini Flash
       </div>
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);
-                 font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
+                  font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
         <span style="background:linear-gradient(135deg,#e8eaf6,#ffffff);
-                     -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+                      -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
           Your Academic
         </span><br>
         <span style="background:linear-gradient(135deg,#00f5d4,#7b61ff,#ff6b6b);
-                     -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+                      -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
           Super-Intelligence
-        </span>
+        </span> 
       </h1>
       <p style="color:#6b7280;font-size:1.05rem;max-width:500px;margin:0 auto;">
         Assignments · Quizzes · Research · Code · Essays · Problem Sets
@@ -223,32 +160,30 @@ def render():
         st.session_state.messages = []
     if "subject" not in st.session_state:
         st.session_state.subject = "⚙️ General / Mixed Subjects"
-    if "uploaded_files_cache" not in st.session_state:
-        st.session_state.uploaded_files_cache = []
 
     # ── API Key check ─────────────────────────────────────────────────────────
-    client = get_client()
-    if not client:
+    model_instance = get_client()
+    if not model_instance:
         st.markdown("""
         <div style="background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);
                     border-radius:16px;padding:1.25rem;margin:1rem 0;">
           <div style="color:#ff6b6b;font-family:'Syne',sans-serif;font-weight:700;margin-bottom:0.5rem;">
-            🔑 API Key Required
+            🔑 Google API Key Required
           </div>
           <div style="color:#9ca3af;font-size:0.9rem;">
-            Enter your Anthropic API key in the sidebar to start chatting. 
-            Get one free at <strong>console.anthropic.com</strong>
+            Enter your Google API key in the sidebar. 
+            Get one for free at <strong>aistudio.google.com</strong>
           </div>
         </div>
         """, unsafe_allow_html=True)
         
         with st.sidebar:
             st.markdown("### 🔑 API Configuration")
-            key_input = st.text_input("Anthropic API Key", type="password", 
-                                       placeholder="sk-ant-...",
-                                       key="anthropic_key_input")
+            key_input = st.text_input("Google API Key", type="password", 
+                                       placeholder="AIza...",
+                                       key="google_key_input")
             if key_input:
-                st.session_state.anthropic_key = key_input
+                st.session_state.google_key = key_input
                 st.rerun()
         return
 
@@ -270,7 +205,7 @@ def render():
         if st.button("📤 Export", use_container_width=True):
             if st.session_state.messages:
                 export_text = "\n\n".join([
-                    f"{'YOU' if m['role']=='user' else 'ADD AI'}: {m['content'] if isinstance(m['content'], str) else '[file + message]'}"
+                    f"{'YOU' if m['role']=='user' else 'ADD AI'}: {m['content']}"
                     for m in st.session_state.messages
                 ])
                 st.download_button("💾 Download", export_text, "chat_export.txt", "text/plain")
@@ -291,9 +226,6 @@ def render():
                 Ask anything academic — or upload your files below
               </div>
             </div>
-            
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
-                        gap:0.75rem;margin-bottom:1rem;">
             """, unsafe_allow_html=True)
             
             examples = [
@@ -315,22 +247,19 @@ def render():
         else:
             for msg in st.session_state.messages:
                 if msg["role"] == "user":
-                    content_text = msg["content"] if isinstance(msg["content"], str) else \
-                        next((b["text"] for b in msg["content"] if b.get("type") == "text"), "")
                     st.markdown(f"""
                     <div class="message-user">
                       <div class="message-label" style="color:#7b61ff;">You</div>
-                      <div style="color:#e8eaf6;line-height:1.6;">{content_text}</div>
+                      <div style="color:#e8eaf6;line-height:1.6;">{msg["content"]}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 else:
-                    content = msg["content"]
                     st.markdown(f"""
                     <div class="message-ai">
                       <div class="message-label" style="color:#00f5d4;">⚡ Add AI</div>
                     </div>
                     """, unsafe_allow_html=True)
-                    st.markdown(content)
+                    st.markdown(msg["content"])
 
     # ── Input Area ────────────────────────────────────────────────────────────
     st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
@@ -351,18 +280,14 @@ def render():
         )
         
         if uploaded and len(uploaded) > 10:
-            st.warning("⚠️ Maximum 10 files at a time. Only first 10 will be used.")
+            st.warning("⚠️ Maximum 10 files at a time.")
             uploaded = uploaded[:10]
-        
-        if uploaded:
-            file_pills = " ".join([f"<span style='background:rgba(0,245,212,0.1);border:1px solid rgba(0,245,212,0.2);border-radius:100px;padding:0.15rem 0.6rem;font-size:0.75rem;color:#00f5d4;'>📄 {f.name}</span>" for f in uploaded])
-            st.markdown(f"<div style='margin:0.5rem 0;display:flex;flex-wrap:wrap;gap:0.4rem;'>{file_pills}</div>", unsafe_allow_html=True)
         
         col_input, col_send = st.columns([6, 1])
         with col_input:
             user_input = st.text_area(
                 "Message",
-                placeholder="Ask anything — homework help, problem solving, essay writing, code review...",
+                placeholder="Ask anything...",
                 height=100,
                 label_visibility="collapsed",
                 key="chat_input"
@@ -373,7 +298,6 @@ def render():
         
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── Handle pending example click ──────────────────────────────────────────
     if "pending_message" in st.session_state:
         user_input = st.session_state.pending_message
         del st.session_state.pending_message
@@ -381,23 +305,8 @@ def render():
 
     # ── Process message ───────────────────────────────────────────────────────
     if send and user_input and user_input.strip():
-        # Build content
-        if uploaded:
-            content = build_content_blocks(user_input.strip(), uploaded)
-        else:
-            content = user_input.strip()
+        st.session_state.messages.append({"role": "user", "content": user_input.strip()})
         
-        st.session_state.messages.append({"role": "user", "content": content})
-        
-        # Build API messages (convert our format)
-        api_messages = []
-        for m in st.session_state.messages:
-            if isinstance(m["content"], str):
-                api_messages.append({"role": m["role"], "content": m["content"]})
-            else:
-                api_messages.append({"role": m["role"], "content": m["content"]})
-        
-        # Stream response
         with st.spinner(""):
             st.markdown("""
             <div class="message-ai">
@@ -406,44 +315,43 @@ def render():
             </div>
             """, unsafe_allow_html=True)
             
-            system_prompt = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
+            full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
+            model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=full_system)
             
             try:
-                response = client.messages.create(
-                    model="claude-sonnet-4-5",
-                    max_tokens=8000,
-                    system=system_prompt,
-                    messages=api_messages,
-                    tools=[{"type": "web_search_20250305", "name": "web_search"}],
-                )
+                # Convert history
+                history = []
+                for m in st.session_state.messages[:-1]:
+                    role = "model" if m["role"] == "assistant" else "user"
+                    history.append({"role": role, "parts": [m["content"]]})
                 
-                # Extract text from response
-                full_response = ""
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        full_response += block.text
+                chat = model.start_chat(history=history)
+                
+                # Build content parts (text + files)
+                parts = [user_input.strip()]
+                if uploaded:
+                    for f in uploaded:
+                        parts.append(encode_file_for_gemini(f))
+
+                response = chat.send_message(parts)
                 
                 st.session_state.messages.append({
                     "role": "assistant",
-                    "content": full_response
+                    "content": response.text
                 })
-                
             except Exception as e:
-                error_msg = str(e)
                 st.session_state.messages.append({
                     "role": "assistant", 
-                    "content": f"⚠️ Error: {error_msg}\n\nPlease check your API key and try again."
+                    "content": f"⚠️ Error: {str(e)}"
                 })
         
         st.rerun()
     
-    # ── API key setup in sidebar ──────────────────────────────────────────────
     with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
-        key_input = st.text_input("Anthropic API Key", type="password",
-                                   placeholder="sk-ant-...",
-                                   value=st.session_state.get("anthropic_key", ""),
-                                   key="anthropic_key_sidebar")
+        key_input = st.text_input("Google API Key", type="password",
+                                   value=st.session_state.get("google_key", ""),
+                                   key="google_key_sidebar")
         if key_input:
-            st.session_state.anthropic_key = key_input
+            st.session_state.google_key = key_input
