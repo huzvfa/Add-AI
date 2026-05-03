@@ -8,6 +8,7 @@ import mimetypes
 from pathlib import Path
 from dotenv import load_dotenv
 import requests
+from urllib.parse import quote
 
 load_dotenv()
 
@@ -58,6 +59,7 @@ FILE ANALYSIS:
 - When files are uploaded, analyze them thoroughly before answering
 - Extract key information, identify the task type, and tailor your response
 - For PDFs/documents: summarize key points and answer questions about the content
+- For images: describe and analyze what you see in academic context
 - For code files: review, debug, and explain the code
 
 FORMATTING:
@@ -67,15 +69,14 @@ FORMATTING:
 
 Always be the best academic tutor a student has ever had."""
 
-def extract_text_from_file(uploaded_file):
-    """Safely extracts text from uploaded code, txt, or data files for the free API."""
+def encode_file(uploaded_file):
+    data = uploaded_file.read()
+    uploaded_file.seek(0)
     try:
-        data = uploaded_file.read().decode('utf-8')
-        uploaded_file.seek(0)
-        return f"\n\n--- File: {uploaded_file.name} ---\n{data}\n--- End of File ---\n"
+        text_data = data.decode('utf-8')
+        return f"\n\n--- File: {uploaded_file.name} ---\n{text_data}\n--- End of File ---\n"
     except Exception:
-        uploaded_file.seek(0)
-        return f"\n\n--- File: {uploaded_file.name} (Binary/Image format - please describe the contents as I am a text-only agent) ---\n"
+        return f"\n\n--- File: {uploaded_file.name} (Non-text format attached. Please describe it as I run on a text-only engine) ---\n"
 
 def render():
     # ── Header ────────────────────────────────────────────────────────────────
@@ -85,7 +86,7 @@ def render():
                   border:1px solid rgba(0,245,212,0.2);border-radius:100px;
                   padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;
                   letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ 100% Free AI • Zero Quotas
+        ⚡ Real-time AI • 100% Free
       </div>
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);
                   font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
@@ -320,7 +321,7 @@ def render():
                 final_user_input = user_input.strip()
                 if uploaded:
                     for f in uploaded:
-                        final_user_input += extract_text_from_file(f)
+                        final_user_input += encode_file(f)
 
                 # Format messages for the completely free open-source routing API
                 api_messages = [{"role": "system", "content": full_system}]
@@ -340,7 +341,7 @@ def render():
                     "jsonMode": False
                 }
                 
-                resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=20)
+                resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=10)
                 
                 if resp.status_code == 200:
                     final_response_text = resp.text.strip()
@@ -362,7 +363,7 @@ def render():
     with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
-        st.markdown("<small>This agent is running on an uncapped, 100% free server network. No API keys are required.</small>", unsafe_allow_html=True)
+        st.markdown("<small>This agent is running on an uncapped, 100% free server network. No Google API keys are required anymore.</small>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     render()
