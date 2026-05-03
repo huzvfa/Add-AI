@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 import requests
 from urllib.parse import quote
 
+# Keep safe_ai_generate defined but we will integrate its logic directly into the 
+# processing loop to maintain system prompts and chat history integrity while 
+# minimizing other code changes.
 def safe_ai_generate(client, prompt):
     """Bypasses Gemini Quota 429 Errors by instantly falling back to an uncapped API."""
     if client:
@@ -367,31 +370,78 @@ def render():
             
             full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
             
+            # Use original variables and UI flow.
             try:
-                model = genai.GenerativeModel(
-                    model_name='gemini-2.5-flash', 
-                    system_instruction=full_system
-                )
-                
-                history = []
-                for m in st.session_state.messages[:-1]:
-                    role = "model" if m["role"] == "assistant" else "user"
-                    history.append({"role": role, "parts": [m["content"]]})
-                
-                chat = model.start_chat(history=history)
+                # We do not overwrite the top definition of genai.GenerativeModel
+                # within the try block to ensure we can catch the error specifically.
                 
                 parts = [user_input.strip()]
                 if uploaded:
                     for f in uploaded:
                         parts.append(encode_file(f))
 
-                response = chat.send_message(parts)
+                model = genai.GenerativeModel(
+                    model_name='gemini-2.5-flash', 
+                    system_instruction=full_system
+                )
+                
+                # --- хірургія ---
+                # Detect if files are uploaded. Multi-modal requires Gemini. Text-only can use fallback.
+                has_files = bool(uploaded)
+                
+                if has_files:
+                    # Original logic for multi-modal, letting exceptions (like 429) catch normally
+                    history = []
+                    for m in st.session_state.messages[:-1]:
+                        role = "model" if m["role"] == "assistant" else "user"
+                        history.append({"role": role, "parts": [m["content"]]})
+                    
+                    chat = model.start_chat(history=history)
+                    response = chat.send_message(parts)
+                    final_response_text = response.text
+                else:
+                    # Text-only path: Attempt Gemini, if 429 hits, use backup brain logic.
+                    try:
+                        history = []
+                        for m in st.session_state.messages[:-1]:
+                            role = "model" if m["role"] == "assistant" else "user"
+                            history.append({"role": role, "parts": [m["content"]]})
+                        
+                        chat = model.start_chat(history=history)
+                        # parts[0] is guaranteed to be the user text strip based on logic above
+                        response = chat.send_message(parts[0]) 
+                        final_response_text = response.text
+                    except Exception as chat_error:
+                        # Catch quota/rate limit error specifically
+                        err_str = str(chat_error)
+                        if "429" in err_str or "Quota exceeded" in err_str:
+                            # Construct combined prompt for text-only fallback to maintain context
+                            text_history = ""
+                            for m in st.session_state.messages[:-1]:
+                                rl = "Add AI" if m["role"] == "assistant" else "You"
+                                text_history += f"{rl}: {m['content']}\n\n"
+                            
+                            combined_prompt = f"{full_system}\n\n{text_history}You: {user_input.strip()}"
+                            
+                            # Use requests logic from provided safe_ai_generate definition
+                            fallback_url = f"https://text.pollinations.ai/prompt/{quote(combined_prompt)}?model=openai"
+                            # Increased timeout slightly for large historical context
+                            resp = requests.get(fallback_url, timeout=20) 
+                            if resp.status_code == 200:
+                                final_response_text = resp.text.strip()
+                            else:
+                                final_response_text = "⚠️ Gemini Free Tier limit reached and backup Brain unavailable. Try again in a minute."
+                        else:
+                            # Re-raise non-quota errors to be caught by outer try
+                            raise chat_error
+                # --- конец хирургии ---
                 
                 st.session_state.messages.append({
                     "role": "assistant",
-                    "content": response.text
+                    "content": final_response_text
                 })
             except Exception as e:
+                # Outer catch handles Gemini errors if files present, safety blocks, or fallback API failures.
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": f"⚠️ Error: {str(e)}"
@@ -407,3 +457,7 @@ def render():
                                    key="google_key_sidebar")
         if key_input:
             st.session_state.google_key = key_input
+
+# Note: If your app routing uses `render()`, keep this block. If not, remove it.
+if __name__ == "__main__":
+    render()
