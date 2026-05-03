@@ -38,17 +38,35 @@ TONE_DESCRIPTIONS = {
     "Persuasive": "sales-oriented, compelling, urgent",
 }
 
+# ── Bulletproof Key Fetcher ───────────────────────────────────────────────────
+
+def get_key(env_var_name, session_state_name):
+    """Aggressively checks for keys across Sidebar, Streamlit Secrets, and .env"""
+    # 1. Check sidebar (session state)
+    if st.session_state.get(session_state_name):
+        return st.session_state[session_state_name]
+    
+    # 2. Check Streamlit Cloud Secrets
+    try:
+        if env_var_name in st.secrets:
+            return st.secrets[env_var_name]
+    except Exception:
+        pass
+        
+    # 3. Check local .env / OS environment variables
+    return os.environ.get(env_var_name, "")
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def get_gemini_client():
-    key = os.environ.get("GOOGLE_API_KEY") or st.session_state.get("google_key", "")
+    key = get_key("GOOGLE_API_KEY", "google_key")
     if key:
         genai.configure(api_key=key)
         return genai.GenerativeModel(model_name='gemini-2.5-flash')
     return None
 
 def get_elevenlabs_key():
-    return os.environ.get("ELEVENLABS_API_KEY") or st.session_state.get("elevenlabs_key", "")
+    return get_key("ELEVENLABS_API_KEY", "elevenlabs_key")
 
 def enhance_prompt_with_gemini(client, prompt, mode):
     system = """You are a UGC (User Generated Content) creative director. Transform basic prompts into highly detailed, cinematic generation prompts. Return ONLY the enhanced prompt, nothing else."""
@@ -60,10 +78,10 @@ def enhance_prompt_with_gemini(client, prompt, mode):
 
 def generate_image_hf(prompt):
     """Uses Hugging Face's 100% Free Inference API with Stable Diffusion XL."""
-    hf_token = os.environ.get("HF_TOKEN") or st.session_state.get("hf_token", "")
+    hf_token = get_key("HF_TOKEN", "hf_token")
     
     if not hf_token:
-        return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar."
+        return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar or Streamlit Secrets."
     
     API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
     headers = {"Authorization": f"Bearer {hf_token}"}
@@ -268,8 +286,8 @@ def render():
         if st.button("🎨 Generate Image", key="t2i_gen", use_container_width=True):
             if not t2i_prompt.strip():
                 st.warning("Please enter a description.")
-            elif not st.session_state.get("hf_token"):
-                st.error("🔑 Hugging Face Token Required. Add it in the sidebar settings.")
+            elif not get_key("HF_TOKEN", "hf_token"):
+                st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
                 with st.status("🎨 Creating your UGC image via Hugging Face...", expanded=True) as status:
                     final_prompt = t2i_prompt.strip()
@@ -315,8 +333,8 @@ def render():
         if st.button("🔄 Generate New Free Image", key="i2i_gen", use_container_width=True):
             if not i2i_prompt.strip():
                 st.warning("Please enter a description.")
-            elif not st.session_state.get("hf_token"):
-                st.error("🔑 Hugging Face Token Required. Add it in the sidebar settings.")
+            elif not get_key("HF_TOKEN", "hf_token"):
+                st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
                 with st.status("🔄 Generating...", expanded=True) as status:
                     final_prompt = i2i_prompt.strip()
