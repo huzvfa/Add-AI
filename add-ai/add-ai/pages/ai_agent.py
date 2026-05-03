@@ -70,8 +70,8 @@ def get_client():
     if not api_key:
         return None
     genai.configure(api_key=api_key)
-    # UPDATED LINE: Using Gemini 3 Flash
-    return genai.GenerativeModel(model_name='gemini-3-flash')
+    # FIXED LINE: Using the standard stable ID
+    return genai.GenerativeModel(model_name='gemini-1.5-flash')
 
 def encode_file_for_gemini(uploaded_file):
     """Encode uploaded file for Gemini."""
@@ -87,7 +87,7 @@ def render():
                   border:1px solid rgba(0,245,212,0.2);border-radius:100px;
                   padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;
                   letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ Real-time AI • Powered by Gemini 3
+        ⚡ Real-time AI • Powered by Gemini
       </div>
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);
                   font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
@@ -317,8 +317,8 @@ def render():
             """, unsafe_allow_html=True)
             
             full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
-            # UPDATED LINE: Set system instruction
-            model = genai.GenerativeModel(model_name='gemini-3-flash', system_instruction=full_system)
+            # FIXED LINE: Targeting stable Gemini 1.5 Flash
+            model = genai.GenerativeModel(model_name='gemini-1.5-flash', system_instruction=full_system)
             
             try:
                 # Convert history
