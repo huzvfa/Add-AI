@@ -74,7 +74,7 @@ def enhance_prompt_with_gemini(client, prompt, mode):
         return prompt
 
 def generate_image_hf(prompt):
-    """Uses Ungated HF Models with an 8-Second Hard Timeout to absolutely prevent stuck loading."""
+    """Uses Ungated HF Models with an 8-Second Hard Timeout to prevent loading freezes."""
     hf_token = get_key("HF_TOKEN", "hf_token")
     if not hf_token:
         return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar or Streamlit Secrets."
@@ -90,42 +90,49 @@ def generate_image_hf(prompt):
     for model in models_to_try:
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
         try:
-            # 8 SECOND TIMEOUT: This stops the app from infinitely freezing if HF is slow
             resp = requests.post(API_URL, headers=headers, json=payload, timeout=8)
             if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', '').lower():
                 return resp.content, None
             elif resp.status_code == 503:
-                continue # Skip sleeping, immediately jump to the bypass to save time
+                continue 
         except Exception:
-            continue # If it times out or errors, instantly move on
+            continue
 
-    # THE ULTIMATE BYPASS: If servers are slow, offload the image request to the user's browser.
+    # BROWSER BYPASS: Offload to client browser if HF fails
     seed = random.randint(1, 100000)
     fallback_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?seed={seed}&width=1024&height=1024&nologo=true"
     return fallback_url, None
 
 def generate_video_free(prompt):
-    """Hits the free Hugging Face Video API."""
+    """Video Model Cascade: Tries 3 different free video servers. If one is down (404/503), it jumps to the next."""
     hf_token = get_key("HF_TOKEN", "hf_token")
     if not hf_token:
-        return None, "🔑 Missing Hugging Face Token. Add it to generate videos."
+        return None, "🔑 Missing Hugging Face Token. Add it in settings to generate free videos."
         
-    API_URL = "https://api-inference.huggingface.co/models/ali-vilab/text-to-video-ms-1.7b"
+    models_to_try = [
+        "damo-vilab/text-to-video-ms-1.7b",
+        "cerspense/zeroscope_v2_576w",
+        "ByteDance/ModelScope-text-to-video-synthesis"
+    ]
+    
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {"inputs": prompt}
     
-    try:
-        # Video takes longer to process, so we give it 40 seconds
-        resp = requests.post(API_URL, headers=headers, json=payload, timeout=40)
-        
-        if resp.status_code == 200:
-            return resp.content, None
-        elif resp.status_code == 503:
-            return None, "⏳ The free video server is booting up. Please wait 30 seconds and click Generate again."
-        else:
-            return None, f"Video API Error {resp.status_code}: The free video model is currently overloaded. Please try again in a few minutes."
-    except Exception as e:
-        return None, "Timeout Error: The free video server took too long to respond. Please try again."
+    for model in models_to_try:
+        API_URL = f"https://api-inference.huggingface.co/models/{model}"
+        try:
+            # Video takes longer, allowing 15 seconds per model before jumping
+            resp = requests.post(API_URL, headers=headers, json=payload, timeout=15)
+            
+            if resp.status_code == 200:
+                return resp.content, None
+            elif resp.status_code == 503 or resp.status_code == 404:
+                continue # Model is overloaded or removed, instantly try the next one
+        except Exception:
+            continue # Timeout, instantly try the next one
+
+    # If ALL 3 free models are down/overloaded, fail gracefully without crashing the app
+    return None, "Server Alert: All 3 free video servers are currently at maximum global capacity. Video AI requires massive GPU power and free queues fill up fast. Please wait 60 seconds and try again."
 
 def generate_tts_elevenlabs(script, voice_id, tone):
     api_key = get_elevenlabs_key()
@@ -303,7 +310,7 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
-                with st.status("🎨 Creating your UGC image via AI...", expanded=True) as status:
+                with st.status("🎨 Creating your UGC image...", expanded=True) as status:
                     final_prompt = t2i_prompt.strip()
                     if t2i_enhance and client:
                         st.write("✨ Enhancing prompt with Gemini...")
@@ -324,7 +331,6 @@ def render():
                         st.markdown('<div class="output-frame">', unsafe_allow_html=True)
                         
                         if isinstance(img_data, str) and img_data.startswith("http"):
-                            # This bypasses the loading lock completely by pushing the fetch directly to the user's browser
                             st.markdown(f'<img src="{img_data}" style="width:100%; border-radius:16px; margin-bottom:1rem;">', unsafe_allow_html=True)
                             st.markdown('</div>', unsafe_allow_html=True)
                             st.info("💡 **Generated via Browser Bypass to avoid server overload.** Right-click the image and select 'Save Image As...' to download.")
@@ -455,13 +461,13 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
-                with st.status("🎬 Processing Free Video...", expanded=True) as status:
+                with st.status("🎬 Processing Free Video Cascade...", expanded=True) as status:
                     final_prompt = t2v_prompt.strip()
                     if client:
                         st.write("✨ Enhancing prompt...")
                         final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-video")
                     
-                    st.write("🎬 Generating video via Hugging Face...")
+                    st.write("🎬 Generating video (Searching for open server slot)...")
                     video_data, v_err = generate_video_free(final_prompt)
                     
                     audio_data = None
@@ -522,7 +528,7 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required.")
             else:
-                with st.status("📽️ Animating your prompt via HF Free Video...", expanded=True) as status:
+                with st.status("📽️ Animating your prompt via HF Cascade...", expanded=True) as status:
                     video_data, v_err = generate_video_free(i2v_prompt.strip())
                     
                     if v_err:
