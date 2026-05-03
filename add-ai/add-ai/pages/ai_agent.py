@@ -8,7 +8,28 @@ import mimetypes
 from pathlib import Path
 from dotenv import load_dotenv
 import requests
-from urllib.parse import quote
+
+# Keep safe_ai_generate defined but we will integrate its logic directly into the 
+# processing loop to maintain system prompts and chat history integrity while 
+# minimizing other code changes.
+def safe_ai_generate(client, prompt):
+    """Bypasses Gemini by instantly routing to the local autonomous core."""
+    # The 100% free, uncapped fallback (Requires Ollama running locally)
+    try:
+        # Changed to ping localhost instead of an external API
+        fallback_url = "http://localhost:11434/api/generate"
+        payload = {
+            "model": "mistral", # Make sure you have run `ollama run mistral` in your terminal
+            "prompt": prompt,
+            "stream": False
+        }
+        resp = requests.post(fallback_url, json=payload, timeout=30)
+        if resp.status_code == 200:
+            return resp.json()["response"].strip()
+    except Exception:
+        pass
+    
+    return "Error reaching Local AI server. Ensure Ollama is running on your machine."
 
 load_dotenv()
 
@@ -59,6 +80,7 @@ FILE ANALYSIS:
 - When files are uploaded, analyze them thoroughly before answering
 - Extract key information, identify the task type, and tailor your response
 - For PDFs/documents: summarize key points and answer questions about the content
+- For images: describe and analyze what you see in academic context
 - For code files: review, debug, and explain the code
 
 FORMATTING:
@@ -68,15 +90,19 @@ FORMATTING:
 
 Always be the best academic tutor a student has ever had."""
 
-def extract_text_from_file(uploaded_file):
-    """Safely extracts text from uploaded code, txt, or data files for the free API."""
+def get_client():
+    # Removed Google SDK dependency completely
+    return None
+
+def encode_file(uploaded_file):
+    # Safely extracts text for local processing instead of relying on Gemini file API
     try:
         data = uploaded_file.read().decode('utf-8')
         uploaded_file.seek(0)
-        return f"\n\n--- File: {uploaded_file.name} ---\n{data}\n--- End of File ---\n"
+        return f"\n\n--- Content from file: {uploaded_file.name} ---\n{data}\n--- End of file ---\n"
     except Exception:
         uploaded_file.seek(0)
-        return f"\n\n--- File: {uploaded_file.name} (Binary/Image format - please describe the contents as I am a text-only agent) ---\n"
+        return f"\n\n--- Note: Attached file {uploaded_file.name} is a binary/image format. Add AI operates strictly on text and code context right now. ---\n"
 
 def render():
     # ── Header ────────────────────────────────────────────────────────────────
@@ -86,7 +112,7 @@ def render():
                   border:1px solid rgba(0,245,212,0.2);border-radius:100px;
                   padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;
                   letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ 100% Free AI • Zero Quotas
+        ⚡ Real-time AI • Autonomous Core
       </div>
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);
                   font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
@@ -317,46 +343,43 @@ def render():
             full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
             
             try:
-                # Compile the full user prompt with any uploaded text files
-                final_user_input = user_input.strip()
-                if uploaded:
-                    for f in uploaded:
-                        final_user_input += extract_text_from_file(f)
-
-                # Format messages for the completely free open-source routing API
+                # Format local messages
                 api_messages = [{"role": "system", "content": full_system}]
-                
-                # Append chat history
                 for m in st.session_state.messages[:-1]:
                     api_messages.append({"role": m["role"], "content": m["content"]})
                 
-                # Append the latest user message with files included
-                api_messages.append({"role": "user", "content": final_user_input})
+                final_input = user_input.strip()
+                if uploaded:
+                    for f in uploaded:
+                        final_input += encode_file(f)
+                
+                api_messages.append({"role": "user", "content": final_input})
 
-                # Call the 100% Free API (Requires NO API key, completely bypasses Google)
-                # Hardcoded to 'mistral' for blazing fast 1-2 second responses
+                # Pointing purely to Localhost Ollama API
                 payload = {
-                    "messages": api_messages,
                     "model": "mistral",
-                    "jsonMode": False
+                    "messages": api_messages,
+                    "stream": False
                 }
                 
-                # Using the core text generation endpoint
-                resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=15)
+                # Make sure Ollama is running on your local machine
+                resp = requests.post("http://localhost:11434/api/chat", json=payload, timeout=60)
                 
                 if resp.status_code == 200:
-                    final_response_text = resp.text.strip()
+                    final_response_text = resp.json()["message"]["content"].strip()
                 else:
-                    final_response_text = f"⚠️ Free API Error ({resp.status_code}): Servers are experiencing high load. Please try again."
+                    final_response_text = "⚠️ Local API Error. Please ensure Ollama is installed and running on your machine."
                 
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": final_response_text
                 })
             except Exception as e:
+                # Catch quota/rate limit error specifically
+                err_str = str(e)
                 st.session_state.messages.append({
                     "role": "assistant", 
-                    "content": f"⚠️ Network Error: Unable to reach the free AI servers. Please check your connection."
+                    "content": f"⚠️ Local Connection Error: Unable to reach localhost. Please run `ollama serve` in your terminal to start the autonomous core."
                 })
         
         st.rerun()
@@ -364,7 +387,8 @@ def render():
     with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
-        st.markdown("<small>This agent is running on an uncapped, 100% free server network. No API keys are required.</small>", unsafe_allow_html=True)
+        st.markdown("<small>This agent is running completely locally on your hardware. Zero API keys, Zero Quotas.</small>", unsafe_allow_html=True)
 
+# Note: If your app routing uses `render()`, keep this block. If not, remove it.
 if __name__ == "__main__":
     render()
