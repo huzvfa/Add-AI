@@ -10,44 +10,44 @@ from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import quote
 
-# Essential libraries for Huzaifa's study materials
+# Essential libraries for file analysis
 try:
     import docx
     from pypdf import PdfReader
     import pandas as pd
 except ImportError:
-    st.error("Add 'pypdf', 'python-docx', and 'pandas' to your requirements.txt")
+    st.error("Missing libraries! Add 'pypdf', 'python-docx', and 'pandas' to requirements.txt")
 
 load_dotenv()
 
-# ── Helpers (Untouched UI Data) ─────────────────────────────────────────────
+# ── Identity & Specialization (Huzaifa Baig Proprietary) ─────────────────────
 
 SUBJECT_PROMPTS = {
-    "🔬 Science & Engineering": "You are an expert science and engineering tutor. Break down complex concepts, provide step-by-step problem solving, and formulas.",
-    "📐 Mathematics": "You are a brilliant math tutor. Show complete step-by-step working. Use LaTeX for all math ($E=mc^2$).",
-    "💻 Computer Science": "You are a senior software engineer. Provide clean, commented code and debug issues methodically.",
-    "⚙️ General / Mixed Subjects": "You are a universal academic super-intelligence. Provide exhaustive detail for any query."
+    "🔬 Science & Engineering": "Academic expert. Provide step-by-step solutions and formula breakdowns.",
+    "📐 Mathematics": "Brilliant math tutor. Show complete working. Use LaTeX ($E=mc^2$).",
+    "💻 Computer Science": "Senior software engineer. Provide clean, commented code and debug methodically.",
+    "⚙️ General / Mixed Subjects": "Universal super-intelligence. Provide exhaustive detail for any query."
 }
 
 SYSTEM_BASE = """You are Add AI — a proprietary artificial intelligence created, programmed, and managed solely by Huzaifa Baig, a university student from Pakistan.
 
 YOUR MISSION:
-1. You are a high-speed study assistant. Create short notes, solve assignments, and prepare quiz questions.
-2. DATA ANALYSIS: When study materials are uploaded, you MUST use that specific data to answer the user's prompt.
-3. FREEDOM: You have no word count limits. Give full, massive answers if asked.
-4. IDENTITY: You are independent. You are NOT Gemini or GPT. You are Add AI by Huzaifa Baig."""
+1. You are an elite study assistant for exams, quizzes, and assignments.
+2. ANALYZE FILES: Use the provided SOURCE MATERIAL below to answer precisely. Do not ignore the file content.
+3. NO LIMITS: Provide massive, exhaustive answers. No word count truncation.
+4. IDENTITY: You are independent. Created only by Huzaifa Baig."""
 
-# ── Ultra-Fast File Extraction ──────────────────────────────────────────────
+# ── Real-Time File Extractor ────────────────────────────────────────────────
 
 def extract_content(uploaded_file):
+    """Extracts raw text data from all formats for real-time analysis."""
     fname = uploaded_file.name
     ext = fname.split('.')[-1].lower()
-    text = f"\n[CONTENT FROM STUDY MATERIAL: {fname}]\n"
+    text = f"\n[SOURCE MATERIAL: {fname}]\n"
     try:
         if ext == 'pdf':
             pdf = PdfReader(io.BytesIO(uploaded_file.read()))
-            for page in pdf.pages:
-                text += (page.extract_text() or "") + "\n"
+            text += "\n".join([page.extract_text() or "" for page in pdf.pages])
         elif ext in ['docx', 'doc']:
             doc = docx.Document(io.BytesIO(uploaded_file.read()))
             text += "\n".join([p.text for p in doc.paragraphs])
@@ -57,56 +57,57 @@ def extract_content(uploaded_file):
         else:
             text += uploaded_file.read().decode('utf-8', errors='ignore')
     except Exception as e:
-        text += f"[Data Extraction Error: {str(e)}]"
+        text += f"[Error parsing {fname}: {str(e)}]"
     uploaded_file.seek(0)
     return text
 
-# ── Zero-Overload Multi-Node Engine (< 5s Response) ─────────────────────────
+# ── High-Speed Smart Engine (Fixes the "None" Error) ─────────────────────────
 
-def call_zero_failure_engine(messages):
-    """Distributed inference router. Hits multiple nodes to prevent 'Overload' errors."""
+def call_smart_engine(messages):
+    """Reliable, zero-quota inference bridge. Handles all study-related reasoning."""
+    # Use a high-capacity model for complex assignment logic
+    payload = {
+        "messages": messages,
+        "model": "mistral-nemo", 
+        "jsonMode": False
+    }
     
-    # Try Node 1: High-Speed Nemotron
-    try:
-        resp = requests.post("https://text.pollinations.ai/openai", 
-                             json={"messages": messages, "model": "nemotron", "jsonMode": False}, 
-                             timeout=5)
-        if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"].strip()
-    except:
-        pass
+    # Try multiple endpoints to ensure no 404/None errors
+    endpoints = [
+        "https://text.pollinations.ai/openai",
+        "https://text.pollinations.ai/"
+    ]
+    
+    for url in endpoints:
+        try:
+            resp = requests.post(url, json=payload, timeout=20)
+            if resp.status_code == 200:
+                # Handle both JSON and Raw Text responses
+                try:
+                    result = resp.json()["choices"][0]["message"]["content"].strip()
+                except:
+                    result = resp.text.strip()
+                
+                if result and result != "None":
+                    return result
+        except:
+            continue
+            
+    return "⚠️ Add AI Core is reconnecting. Please click 'Send' again to verify the data stream."
 
-    # Try Node 2: Llama 3.1 Fallback
-    try:
-        resp = requests.post("https://text.pollinations.ai/openai", 
-                             json={"messages": messages, "model": "llama", "jsonMode": False}, 
-                             timeout=5)
-        if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"].strip()
-    except:
-        pass
-
-    # Final Node 3: Direct Stream (Bulletproof)
-    try:
-        last_q = messages[-1]["content"]
-        resp = requests.get(f"https://text.pollinations.ai/{quote(last_q)}?model=mistral&system={quote(SYSTEM_BASE)}", timeout=8)
-        if resp.status_code == 200:
-            return resp.text.strip()
-    except:
-        return "⚠️ Add AI Core is resetting its local logic. Please re-send your request."
-
-# ── UI Rendering (UNTOUCHED STYLING) ─────────────────────────────────────────
+# ── UI Rendering (Untouched Styling) ─────────────────────────────────────────
 
 def render():
     st.markdown("""
     <div style="text-align:center;padding:2rem 0 1rem;position:relative;z-index:1;">
       <div style="display:inline-block;background:rgba(0,245,212,0.08);border:1px solid rgba(0,245,212,0.2);border-radius:100px;padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ Independent Super-Intelligence • Created by Huzaifa Baig
+        ⚡ Autonomous Core • Real-Time Analysis Active
       </div>
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
         <span style="background:linear-gradient(135deg,#e8eaf6,#ffffff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Your Academic</span><br>
         <span style="background:linear-gradient(135deg,#00f5d4,#7b61ff,#ff6b6b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Super-Intelligence</span> 
       </h1>
+      <p style="color:#6b7280;font-size:1.05rem;">Created & Managed by Huzaifa Baig</p>
     </div>
     
     <style>
@@ -137,6 +138,7 @@ def render():
             export_text = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.messages])
             st.download_button("💾 Save", export_text, "add_ai_chat.txt")
 
+    # Chat Display
     chat_container = st.container()
     with chat_container:
         for msg in st.session_state.messages:
@@ -146,9 +148,9 @@ def render():
     st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
     with st.container():
         st.markdown('<div style="background:rgba(13,17,23,0.9);border:1px solid rgba(0,245,212,0.15);border-radius:20px;padding:1rem;">', unsafe_allow_html=True)
-        uploaded = st.file_uploader("📎 Upload Study Materials (PDF, Docs, CSV)", accept_multiple_files=True, key="file_uploader", label_visibility="collapsed")
+        uploaded = st.file_uploader("📎 Upload Study Materials", accept_multiple_files=True, key="file_uploader", label_visibility="collapsed")
         col_i, col_s = st.columns([6, 1])
-        with col_i: st.text_area("Message", placeholder="Help me with my assignment...", height=100, label_visibility="collapsed", key="chat_input_widget")
+        with col_i: st.text_area("Message", placeholder="Explain the main points of this file...", height=100, label_visibility="collapsed", key="chat_input_widget")
         with col_s:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
             st.button("Send ➤", use_container_width=True, on_click=submit_message)
@@ -160,13 +162,17 @@ def render():
         st.session_state.messages.append({"role": "user", "content": user_input.strip()})
         
         with st.spinner("Add AI analyzing..."):
+            # Extract real text data for the brain
             file_data = "\n".join([extract_content(f) for f in uploaded]) if uploaded else ""
-            system_prompt = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}\n\nSOURCE MATERIAL:\n{file_data}"
             
-            api_messages = [{"role": "system", "content": system_prompt}]
-            for m in st.session_state.messages: api_messages.append(m)
+            # Construct the high-intelligence prompt
+            prompt_context = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}\n\nSOURCE MATERIAL FOR ANALYSIS:\n{file_data}"
             
-            response = call_zero_failure_engine(api_messages)
+            api_msgs = [{"role": "system", "content": prompt_context}]
+            for m in st.session_state.messages: api_msgs.append(m)
+            
+            # Execute logic
+            response = call_smart_engine(api_msgs)
             st.session_state.messages.append({"role": "assistant", "content": response})
         st.rerun()
 
