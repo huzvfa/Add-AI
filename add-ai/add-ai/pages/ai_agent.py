@@ -1,6 +1,5 @@
 import streamlit as st
 import streamlit.components.v1 as components
-import google.generativeai as genai
 import base64
 import json
 import os
@@ -9,30 +8,6 @@ import mimetypes
 from pathlib import Path
 from dotenv import load_dotenv
 import requests
-from urllib.parse import quote
-
-# Keep safe_ai_generate defined but we will integrate its logic directly into the 
-# processing loop to maintain system prompts and chat history integrity while 
-# minimizing other code changes.
-def safe_ai_generate(client, prompt):
-    """Bypasses Gemini Quota 429 Errors by instantly falling back to an uncapped API."""
-    if client:
-        try:
-            return client.generate_content(prompt).text.strip()
-        except Exception:
-            pass # Quota exceeded or error, smoothly catch it and fall back
-            
-    # The 100% free, uncapped fallback (No API key needed)
-    try:
-        # Switched to mistral model for blazing fast 1-2 second response times
-        fallback_url = f"https://text.pollinations.ai/prompt/{quote(prompt)}?model=mistral"
-        resp = requests.get(fallback_url, timeout=5)
-        if resp.status_code == 200:
-            return resp.text.strip()
-    except Exception:
-        pass
-    
-    return "Error reaching AI servers."
 
 load_dotenv()
 
@@ -83,7 +58,6 @@ FILE ANALYSIS:
 - When files are uploaded, analyze them thoroughly before answering
 - Extract key information, identify the task type, and tailor your response
 - For PDFs/documents: summarize key points and answer questions about the content
-- For images: describe and analyze what you see in academic context
 - For code files: review, debug, and explain the code
 
 FORMATTING:
@@ -93,20 +67,15 @@ FORMATTING:
 
 Always be the best academic tutor a student has ever had."""
 
-def get_client():
-    api_key = os.environ.get("GOOGLE_API_KEY", "")
-    if not api_key:
-        api_key = st.session_state.get("google_key", "")
-    if not api_key:
-        return None
-    genai.configure(api_key=api_key)
-    # Changed to gemini-2.0-flash for ultra-low latency 1-2s response times
-    return genai.GenerativeModel(model_name='gemini-2.0-flash')
-
-def encode_file(uploaded_file):
-    data = uploaded_file.read()
-    uploaded_file.seek(0)
-    return {"mime_type": uploaded_file.type, "data": data}
+def extract_text_from_file(uploaded_file):
+    """Safely extracts text from uploaded code, txt, or data files for the free API."""
+    try:
+        data = uploaded_file.read().decode('utf-8')
+        uploaded_file.seek(0)
+        return f"\n\n--- File: {uploaded_file.name} ---\n{data}\n--- End of File ---\n"
+    except Exception:
+        uploaded_file.seek(0)
+        return f"\n\n--- File: {uploaded_file.name} (Binary/Image format - please describe the contents as I am a text-only agent) ---\n"
 
 def render():
     # ── Header ────────────────────────────────────────────────────────────────
@@ -116,7 +85,7 @@ def render():
                   border:1px solid rgba(0,245,212,0.2);border-radius:100px;
                   padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;
                   letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ Real-time AI • Powered by Gemini
+        ⚡ 100% Free AI • Zero Quotas
       </div>
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);
                   font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
@@ -201,31 +170,6 @@ def render():
             st.session_state.pending_message = st.session_state.chat_input_widget
         # Clear the input box immediately
         st.session_state.chat_input_widget = ""
-
-    # ── API Key check ─────────────────────────────────────────────────────────
-    model_instance = get_client()
-    if not model_instance:
-        st.markdown("""
-        <div style="background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);
-                    border-radius:16px;padding:1.25rem;margin:1rem 0;">
-          <div style="color:#ff6b6b;font-family:'Syne',sans-serif;font-weight:700;margin-bottom:0.5rem;">
-            🔑 Google API Key Required
-          </div>
-          <div style="color:#9ca3af;font-size:0.9rem;">
-            Enter your Google API key in the sidebar to start chatting.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        with st.sidebar:
-            st.markdown("### 🔑 API Configuration")
-            key_input = st.text_input("Google API Key", type="password", 
-                                       placeholder="AIza...",
-                                       key="google_key_input")
-            if key_input:
-                st.session_state.google_key = key_input
-                st.rerun()
-        return
 
     col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
@@ -312,8 +256,7 @@ def render():
         uploaded = st.file_uploader(
             "📎 Attach files",
             accept_multiple_files=True,
-            type=["pdf","png","jpg","jpeg","gif","webp","txt","py","js","ts","html","css",
-                  "csv","json","xml","md","docx","xlsx","cpp","c","java","rs","go","rb"],
+            type=["txt","py","js","ts","html","css","csv","json","xml","md","cpp","c","java","rs","go","rb"],
             key="file_uploader",
             label_visibility="collapsed"
         )
@@ -372,82 +315,46 @@ def render():
             
             full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
             
-            # Use original variables and UI flow.
             try:
-                # We do not overwrite the top definition of genai.GenerativeModel
-                # within the try block to ensure we can catch the error specifically.
-                
-                parts = [user_input.strip()]
+                # Compile the full user prompt with any uploaded text files
+                final_user_input = user_input.strip()
                 if uploaded:
                     for f in uploaded:
-                        parts.append(encode_file(f))
+                        final_user_input += extract_text_from_file(f)
 
-                # Changed to gemini-2.0-flash for ultra-fast performance
-                model = genai.GenerativeModel(
-                    model_name='gemini-2.0-flash', 
-                    system_instruction=full_system
-                )
+                # Format messages for the completely free open-source routing API
+                api_messages = [{"role": "system", "content": full_system}]
                 
-                # --- хірургія ---
-                # Detect if files are uploaded. Multi-modal requires Gemini. Text-only can use fallback.
-                has_files = bool(uploaded)
+                # Append chat history
+                for m in st.session_state.messages[:-1]:
+                    api_messages.append({"role": m["role"], "content": m["content"]})
                 
-                if has_files:
-                    # Original logic for multi-modal, letting exceptions (like 429) catch normally
-                    history = []
-                    for m in st.session_state.messages[:-1]:
-                        role = "model" if m["role"] == "assistant" else "user"
-                        history.append({"role": role, "parts": [m["content"]]})
-                    
-                    chat = model.start_chat(history=history)
-                    response = chat.send_message(parts)
-                    final_response_text = response.text
+                # Append the latest user message with files included
+                api_messages.append({"role": "user", "content": final_user_input})
+
+                # Call the 100% Free API (Requires NO API key, completely bypasses Google)
+                # Hardcoded to 'mistral' for blazing fast 1-2 second responses
+                payload = {
+                    "messages": api_messages,
+                    "model": "mistral",
+                    "jsonMode": False
+                }
+                
+                resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=20)
+                
+                if resp.status_code == 200:
+                    final_response_text = resp.text.strip()
                 else:
-                    # Text-only path: Attempt Gemini, if 429 hits, use backup brain logic.
-                    try:
-                        history = []
-                        for m in st.session_state.messages[:-1]:
-                            role = "model" if m["role"] == "assistant" else "user"
-                            history.append({"role": role, "parts": [m["content"]]})
-                        
-                        chat = model.start_chat(history=history)
-                        # parts[0] is guaranteed to be the user text strip based on logic above
-                        response = chat.send_message(parts[0]) 
-                        final_response_text = response.text
-                    except Exception as chat_error:
-                        # Catch quota/rate limit error specifically
-                        err_str = str(chat_error)
-                        if "429" in err_str or "Quota exceeded" in err_str or "Invalid" in err_str or "400" in err_str:
-                            # Construct combined prompt for text-only fallback to maintain context
-                            text_history = ""
-                            for m in st.session_state.messages[:-1]:
-                                rl = "Add AI" if m["role"] == "assistant" else "You"
-                                text_history += f"{rl}: {m['content']}\n\n"
-                            
-                            combined_prompt = f"{full_system}\n\n{text_history}You: {user_input.strip()}"
-                            
-                            # Using 'mistral' model for extremely fast 1-2 second response times
-                            fallback_url = f"https://text.pollinations.ai/prompt/{quote(combined_prompt)}?model=mistral"
-                            # Reduced timeout to ensure instant fallback execution
-                            resp = requests.get(fallback_url, timeout=5) 
-                            if resp.status_code == 200:
-                                final_response_text = resp.text.strip()
-                            else:
-                                final_response_text = "⚠️ Free Tier limit reached and backup Brain unavailable. Try again in a moment."
-                        else:
-                            # Re-raise non-quota errors to be caught by outer try
-                            raise chat_error
-                # --- конец хирургии ---
+                    final_response_text = f"⚠️ Free API Error ({resp.status_code}): Servers are experiencing high load. Please try again."
                 
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": final_response_text
                 })
             except Exception as e:
-                # Outer catch handles Gemini errors if files present, safety blocks, or fallback API failures.
                 st.session_state.messages.append({
                     "role": "assistant", 
-                    "content": f"⚠️ Error: {str(e)}"
+                    "content": f"⚠️ Network Error: Unable to reach the free AI servers. Please check your connection."
                 })
         
         st.rerun()
@@ -455,12 +362,7 @@ def render():
     with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
-        key_input = st.text_input("Google API Key", type="password",
-                                   value=st.session_state.get("google_key", ""),
-                                   key="google_key_sidebar")
-        if key_input:
-            st.session_state.google_key = key_input
+        st.markdown("<small>This agent is running on an uncapped, 100% free server network. No API keys are required.</small>", unsafe_allow_html=True)
 
-# Note: If your app routing uses `render()`, keep this block. If not, remove it.
 if __name__ == "__main__":
     render()
