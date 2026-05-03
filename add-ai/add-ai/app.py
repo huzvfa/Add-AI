@@ -217,3 +217,15 @@ if "🧠 AI Agent" in page:
 else:
     from pages.ugc_studio import render
     render()
+# ... (All your CSS and Particle JS exactly the same) ...
+
+# ── Sidebar Navigation ──────────────────────────────────────────────────────
+# ...
+    st.markdown("""
+    <div style="padding:1rem;background:rgba(0,245,212,0.05);border-radius:12px;
+                border:1px solid rgba(0,245,212,0.1);font-size:0.8rem;color:#6b7280;">
+      <div style="color:#00f5d4;font-weight:600;margin-bottom:0.5rem;">⚡ Powered by</div>
+      Gemini Flash • Groq Ultra-Fast<br>Replicate AI • ElevenLabs TTS
+    </div>
+    """, unsafe_allow_html=True)
+# ...
