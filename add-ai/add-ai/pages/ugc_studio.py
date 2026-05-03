@@ -41,8 +41,8 @@ def get_gemini_client():
     key = os.environ.get("GOOGLE_API_KEY") or st.session_state.get("google_key", "")
     if key:
         genai.configure(api_key=key)
-        # UPDATED LINE: Use Gemini 3
-        return genai.GenerativeModel(model_name='gemini-3-flash')
+        # FIXED LINE: Use Gemini 1.5 Flash
+        return genai.GenerativeModel(model_name='gemini-1.5-flash')
     return None
 
 def get_replicate_token():
