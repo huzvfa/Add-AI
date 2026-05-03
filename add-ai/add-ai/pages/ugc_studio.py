@@ -5,8 +5,6 @@ import base64
 import os
 import time
 import json
-import random
-from urllib.parse import quote
 from io import BytesIO
 from dotenv import load_dotenv
 
@@ -60,41 +58,37 @@ def enhance_prompt_with_gemini(client, prompt, mode):
     except:
         return prompt
 
-def generate_image_free(prompt):
-    """Uses a cascade of 100% Free, No-Key APIs and strictly validates that the response is an image."""
-    encoded_prompt = quote(prompt)
+def generate_image_hf(prompt):
+    """Uses Hugging Face's 100% Free Inference API with Stable Diffusion XL."""
+    hf_token = os.environ.get("HF_TOKEN") or st.session_state.get("hf_token", "")
     
-    # Endpoint 1: Airforce API (Primary - Highly reliable Free Stable Diffusion)
+    if not hf_token:
+        return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar."
+    
+    API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    payload = {"inputs": prompt}
+    
     try:
-        url1 = f"https://api.airforce/v1/imagine2?prompt={encoded_prompt}"
-        resp1 = requests.get(url1, timeout=30)
-        content_type1 = resp1.headers.get('Content-Type', '').lower()
+        resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         
-        # CRITICAL FIX: Only accept the response if it is confirmed to be an image format
-        if resp1.status_code == 200 and 'image' in content_type1:
-            return resp1.content, None
-    except:
-        pass # Silently fail over to the next endpoint
-        
-    # Endpoint 2: Pollinations AI (Fallback - With anti-bot headers and cache busting)
-    try:
-        seed = random.randint(1, 100000)
-        url2 = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&nologo=true"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'image/*'
-        }
-        resp2 = requests.get(url2, headers=headers, timeout=30)
-        content_type2 = resp2.headers.get('Content-Type', '').lower()
-        
-        # CRITICAL FIX: Validation check to prevent Streamlit from crashing on HTML/Error pages
-        if resp2.status_code == 200 and 'image' in content_type2:
-            return resp2.content, None
-    except:
-        pass
-
-    # If both fail or return HTML/JSON error pages instead of images, gracefully return a text error
-    return None, "Server Overload: Both primary and backup free image servers are currently overloaded and unable to generate your image. Please wait a few seconds and try again."
+        if resp.status_code == 200:
+            if 'image' in resp.headers.get('Content-Type', '').lower():
+                return resp.content, None
+            else:
+                return None, "API returned non-image data. Please try again."
+        elif resp.status_code == 503:
+            # Hugging Face unloads models when not in use. This handles the warm-up period safely.
+            try:
+                estimated_time = resp.json().get('estimated_time', 30)
+                return None, f"⏳ The free server is warming up the model. Please wait {int(estimated_time)} seconds and click Generate again."
+            except:
+                return None, "⏳ The free server is warming up. Please wait 30 seconds and try again."
+        else:
+            return None, f"Hugging Face API Error {resp.status_code}: {resp.text}"
+            
+    except Exception as e:
+        return None, str(e)
 
 def generate_video_free(prompt, image_data=None):
     """The harsh truth about AI video generation."""
@@ -252,7 +246,7 @@ def render():
     # ── Tab 1: Text to Image ──────────────────────────────────────────────────
     with tabs[0]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">✨ Text → Image (Free)</span>', unsafe_allow_html=True)
+        st.markdown('<span class="mode-badge">✨ Text → Image (Free API)</span>', unsafe_allow_html=True)
         
         t2i_prompt = st.text_area(
             "Scene Description",
@@ -274,8 +268,10 @@ def render():
         if st.button("🎨 Generate Image", key="t2i_gen", use_container_width=True):
             if not t2i_prompt.strip():
                 st.warning("Please enter a description.")
+            elif not st.session_state.get("hf_token"):
+                st.error("🔑 Hugging Face Token Required. Add it in the sidebar settings.")
             else:
-                with st.status("🎨 Creating your 100% free UGC image...", expanded=True) as status:
+                with st.status("🎨 Creating your UGC image via Hugging Face...", expanded=True) as status:
                     final_prompt = t2i_prompt.strip()
                     if t2i_enhance and client:
                         st.write("✨ Enhancing prompt with Gemini...")
@@ -283,10 +279,10 @@ def render():
                             f"[Style: {t2i_style}] {final_prompt}", "text-image")
                         st.write(f"📝 Enhanced: *{final_prompt[:100]}...*")
                     
-                    st.write("🖼️ Generating image via Server Cascade...")
+                    st.write("🖼️ Generating high-quality SDXL image...")
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     
-                    img_data, err = generate_image_free(final_prompt)
+                    img_data, err = generate_image_hf(final_prompt)
                     
                     if err:
                         status.update(label="❌ Generation failed", state="error")
@@ -306,7 +302,7 @@ def render():
     with tabs[1]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
         st.markdown('<span class="mode-badge">🔄 Image → Image</span>', unsafe_allow_html=True)
-        st.markdown("<p style='font-size:0.8rem;color:#ff6b6b;'>Note: Free APIs do not officially support true Image-to-Image editing. This will generate a new free image based entirely on your text description.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:0.8rem;color:#ff6b6b;'>Note: Hugging Face free tier does not natively support true Image-to-Image out of the box in this script. This will generate a new free image based entirely on your text description.</p>", unsafe_allow_html=True)
         
         i2i_prompt = st.text_area(
             "Transformation Description",
@@ -319,13 +315,15 @@ def render():
         if st.button("🔄 Generate New Free Image", key="i2i_gen", use_container_width=True):
             if not i2i_prompt.strip():
                 st.warning("Please enter a description.")
+            elif not st.session_state.get("hf_token"):
+                st.error("🔑 Hugging Face Token Required. Add it in the sidebar settings.")
             else:
                 with st.status("🔄 Generating...", expanded=True) as status:
                     final_prompt = i2i_prompt.strip()
                     if client:
                         final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-image")
                     
-                    img_data, err = generate_image_free(final_prompt)
+                    img_data, err = generate_image_hf(final_prompt)
                     
                     if err:
                         status.update(label="❌ Failed", state="error")
@@ -450,7 +448,12 @@ def render():
         st.markdown("### 🔑 API Keys")
         
         with st.expander("Configure Additional APIs"):
-            st.markdown("<small>Images are now 100% free via Server Cascade. No API key needed.</small>", unsafe_allow_html=True)
+            st.markdown("<small>Get a free token at huggingface.co</small>", unsafe_allow_html=True)
+            hf_key = st.text_input("Hugging Face Token (Images)", type="password",
+                                    value=st.session_state.get("hf_token", ""),
+                                    key="ugc_hf_key")
+            if hf_key: st.session_state.hf_token = hf_key
+            
             el_key = st.text_input("ElevenLabs (voiceovers)", type="password",
                                     value=st.session_state.get("elevenlabs_key", ""),
                                     key="ugc_el_key")
