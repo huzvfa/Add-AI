@@ -82,7 +82,6 @@ def generate_image_hf(prompt):
     if not hf_token:
         return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar or Streamlit Secrets."
     
-    # 10 Image Models to cascade through
     models_to_try = [
         "stabilityai/stable-diffusion-xl-base-1.0",
         "prompthero/openjourney",
@@ -99,39 +98,41 @@ def generate_image_hf(prompt):
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {"inputs": prompt}
     
-    for model in models_to_try:
+    for i, model in enumerate(models_to_try):
+        st.write(f"🔄 Checking Image Server {i+1}/10: `{model.split('/')[1]}`...")
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
         try:
-            resp = requests.post(API_URL, headers=headers, json=payload, timeout=8)
+            resp = requests.post(API_URL, headers=headers, json=payload, timeout=12)
             
             if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', '').lower():
                 return resp.content, None
             else:
-                continue # Immediately jump to next server on error/overload
+                continue 
         except Exception:
-            continue # Immediately jump to next server on timeout
+            continue 
 
     # ULTIMATE BYPASS: If all 10 servers fail, return the direct browser URL
+    st.write("⚠️ All 10 free servers busy. Bypassing Streamlit server and generating via your browser...")
     seed = random.randint(1, 100000)
     fallback_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?seed={seed}&width=1024&height=1024&nologo=true"
     return fallback_url, None
 
 def generate_video_free(prompt):
-    """10-Server Video Cascade."""
+    """Strict 10-Server Video Cascade prioritizing top-tier generative models."""
     hf_token = get_key("HF_TOKEN", "hf_token")
     if not hf_token:
         return None, "🔑 Missing Hugging Face Token. Add it in the sidebar to generate free videos."
         
-    # 10 Video Models to cascade through
+    # The absolute best free models sorted by quality
     models_to_try = [
+        "THUDM/CogVideoX-2b",
+        "THUDM/CogVideoX-5b",
+        "ByteDance/ModelScope-text-to-video-synthesis",
         "damo-vilab/text-to-video-ms-1.7b",
         "ali-vilab/text-to-video-ms-1.7b",
         "cerspense/zeroscope_v2_576w",
-        "ByteDance/ModelScope-text-to-video-synthesis",
-        "THUDM/CogVideoX-2b",
-        "THUDM/CogVideoX-5b",
-        "hotshotco/Hotshot-XL",
         "cerspense/zeroscope_v2_XL",
+        "hotshotco/Hotshot-XL",
         "camenduru/text2-video-zero",
         "mcmonkey/zeroscope-v2-576w"
     ]
@@ -139,19 +140,35 @@ def generate_video_free(prompt):
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {"inputs": prompt}
     
-    for model in models_to_try:
+    for i, model in enumerate(models_to_try):
+        st.write(f"🔄 Connecting to Video Server {i+1}/10: `{model.split('/')[1]}`...")
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
         try:
-            resp = requests.post(API_URL, headers=headers, json=payload, timeout=15)
+            # 75 second timeout. Video takes massive compute, we CANNOT disconnect early.
+            resp = requests.post(API_URL, headers=headers, json=payload, timeout=75)
             
             if resp.status_code == 200:
+                st.write(f"✅ Success on Server {i+1}!")
                 return resp.content, None
+            elif resp.status_code == 503:
+                # WAKING UP PROTOCOL: Give the model 20 seconds to boot up and try it again
+                st.write(f"⏳ Server {i+1} is booting up. Holding connection...")
+                time.sleep(20)
+                resp_retry = requests.post(API_URL, headers=headers, json=payload, timeout=75)
+                if resp_retry.status_code == 200:
+                    st.write(f"✅ Success on Server {i+1} after bootup!")
+                    return resp_retry.content, None
+                else:
+                    st.write(f"❌ Server {i+1} failed to boot. Hopping to next...")
+                    continue
             else:
-                continue # Immediately jump to next server on error/overload
-        except Exception:
-            continue # Immediately jump to next server on timeout
+                st.write(f"❌ Server {i+1} overloaded/unavailable. Hopping to next...")
+                continue 
+        except Exception as e:
+            st.write(f"❌ Server {i+1} connection timed out. Hopping to next...")
+            continue 
 
-    return None, "Server Alert: All 10 free video servers are currently at maximum capacity. Please wait 60 seconds and try again."
+    return None, "Server Alert: All 10 video servers are completely full. AI Video queues take time. Please wait 60 seconds and try again."
 
 
 def generate_tts_elevenlabs(script, voice_id, tone):
@@ -338,7 +355,6 @@ def render():
                             f"[Style: {t2i_style}] {final_prompt}", "text-image")
                         st.write(f"📝 Enhanced: *{final_prompt[:100]}...*")
                     
-                    st.write("🖼️ Connecting to 10-Server Image Cascade...")
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     
                     img_data, err = generate_image_hf(final_prompt)
@@ -487,7 +503,7 @@ def render():
                         st.write("✨ Enhancing prompt...")
                         final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-video")
                     
-                    st.write("🎬 Searching 10 free servers for an open slot...")
+                    st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     video_data, v_err = generate_video_free(final_prompt)
                     
                     audio_data = None
@@ -549,6 +565,7 @@ def render():
                 st.error("🔑 Hugging Face Token Required.")
             else:
                 with st.status("📽️ Animating your prompt via 10-Server Cascade...", expanded=True) as status:
+                    st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     video_data, v_err = generate_video_free(i2v_prompt.strip())
                     
                     if v_err:
