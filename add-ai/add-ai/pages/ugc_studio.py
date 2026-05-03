@@ -118,57 +118,50 @@ def generate_image_hf(prompt):
     return fallback_url, None
 
 def generate_video_free(prompt):
-    """Strict 10-Server Video Cascade prioritizing top-tier generative models."""
+    """Aggressive Hugging Face Retry Protocol targeting the best models."""
     hf_token = get_key("HF_TOKEN", "hf_token")
     if not hf_token:
         return None, "🔑 Missing Hugging Face Token. Add it in the sidebar to generate free videos."
         
-    # The absolute best free models sorted by quality
-    models_to_try = [
-        "THUDM/CogVideoX-2b",
+    # We focus ONLY on the top 3 best Hugging Face models and fight for a slot
+    hf_models = [
         "THUDM/CogVideoX-5b",
-        "ByteDance/ModelScope-text-to-video-synthesis",
-        "damo-vilab/text-to-video-ms-1.7b",
-        "ali-vilab/text-to-video-ms-1.7b",
-        "cerspense/zeroscope_v2_576w",
-        "cerspense/zeroscope_v2_XL",
-        "hotshotco/Hotshot-XL",
-        "camenduru/text2-video-zero",
-        "mcmonkey/zeroscope-v2-576w"
+        "THUDM/CogVideoX-2b",
+        "ByteDance/ModelScope-text-to-video-synthesis"
     ]
     
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {"inputs": prompt}
     
-    for i, model in enumerate(models_to_try):
-        st.write(f"🔄 Connecting to Video Server {i+1}/10: `{model.split('/')[1]}`...")
+    for i, model in enumerate(hf_models):
+        st.write(f"🔄 Connecting to Hugging Face Server {i+1}/3: `{model.split('/')[1]}`...")
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
-        try:
-            # 75 second timeout. Video takes massive compute, we CANNOT disconnect early.
-            resp = requests.post(API_URL, headers=headers, json=payload, timeout=75)
-            
-            if resp.status_code == 200:
-                st.write(f"✅ Success on Server {i+1}!")
-                return resp.content, None
-            elif resp.status_code == 503:
-                # WAKING UP PROTOCOL: Give the model 20 seconds to boot up and try it again
-                st.write(f"⏳ Server {i+1} is booting up. Holding connection...")
-                time.sleep(20)
-                resp_retry = requests.post(API_URL, headers=headers, json=payload, timeout=75)
-                if resp_retry.status_code == 200:
-                    st.write(f"✅ Success on Server {i+1} after bootup!")
-                    return resp_retry.content, None
+        
+        # Aggressive Retry Loop: We try 3 times per model before moving on
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    st.write(f"⏳ Hugging Face queue full. Waiting in line... (Attempt {attempt+1}/3)")
+                    time.sleep(15) # Wait in line for 15 seconds
+                
+                # 80 second timeout to ensure it doesn't hang up while HF is generating
+                resp = requests.post(API_URL, headers=headers, json=payload, timeout=80)
+                
+                if resp.status_code == 200:
+                    st.write(f"✅ Success on Hugging Face Server {i+1}!")
+                    return resp.content, None
+                elif resp.status_code == 503:
+                    st.write(f"⏳ Hugging Face is booting up this model. Holding for 20 seconds...")
+                    time.sleep(20)
+                    continue # Try this specific model again
                 else:
-                    st.write(f"❌ Server {i+1} failed to boot. Hopping to next...")
-                    continue
-            else:
-                st.write(f"❌ Server {i+1} overloaded/unavailable. Hopping to next...")
-                continue 
-        except Exception as e:
-            st.write(f"❌ Server {i+1} connection timed out. Hopping to next...")
-            continue 
+                    st.write(f"❌ Server overloaded (Error {resp.status_code}).")
+                    continue # Try the retry loop again
+            except Exception as e:
+                st.write("❌ Connection timed out. Pushing through...")
+                continue # Try the retry loop again
 
-    return None, "Server Alert: All 10 video servers are completely full. AI Video queues take time. Please wait 60 seconds and try again."
+    return None, "Server Alert: Hugging Face's free video GPUs are completely maxed out globally right now. We tried aggressively waiting in line, but the queues are full. Please wait a few minutes and try again."
 
 
 def generate_tts_elevenlabs(script, voice_id, tone):
@@ -497,7 +490,7 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
-                with st.status("🎬 Processing Free Video Cascade...", expanded=True) as status:
+                with st.status("🎬 Processing Free Video Request...", expanded=True) as status:
                     final_prompt = t2v_prompt.strip()
                     if client:
                         st.write("✨ Enhancing prompt...")
@@ -514,7 +507,7 @@ def render():
                         audio_data, a_err = generate_tts_elevenlabs(t2v_script, voice_id, tone)
                     
                     if v_err:
-                        status.update(label="❌ All 10 Servers Full", state="error")
+                        status.update(label="❌ All Servers Full", state="error")
                         st.error(v_err)
                     else:
                         status.update(label="✅ Content ready!", state="complete")
@@ -564,12 +557,12 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required.")
             else:
-                with st.status("📽️ Animating your prompt via 10-Server Cascade...", expanded=True) as status:
+                with st.status("📽️ Animating your prompt via HF Cascade...", expanded=True) as status:
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     video_data, v_err = generate_video_free(i2v_prompt.strip())
                     
                     if v_err:
-                        status.update(label="❌ All 10 Servers Full", state="error")
+                        status.update(label="❌ All Servers Full", state="error")
                         st.error(v_err)
                     else:
                         status.update(label="✅ Animated!", state="complete")
