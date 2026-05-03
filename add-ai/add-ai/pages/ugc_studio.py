@@ -46,13 +46,11 @@ def get_key(env_var_name, session_state_name):
     """Aggressively checks for keys across Sidebar, Streamlit Secrets, and .env"""
     if st.session_state.get(session_state_name):
         return st.session_state[session_state_name]
-    
     try:
         if env_var_name in st.secrets:
             return st.secrets[env_var_name]
     except Exception:
         pass
-        
     return os.environ.get(env_var_name, "")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -76,16 +74,14 @@ def enhance_prompt_with_gemini(client, prompt, mode):
         return prompt
 
 def generate_image_hf(prompt):
-    """Uses Ungated HF Models + A Client-Side Browser Bypass to defeat 429/404s."""
+    """Uses Ungated HF Models with an 8-Second Hard Timeout to absolutely prevent stuck loading."""
     hf_token = get_key("HF_TOKEN", "hf_token")
-    
     if not hf_token:
         return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar or Streamlit Secrets."
     
-    # These models DO NOT require clicking "Accept Terms" on the Hugging Face website.
     models_to_try = [
-        "prompthero/openjourney",
-        "stabilityai/stable-diffusion-2-1"
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        "prompthero/openjourney"
     ]
     
     headers = {"Authorization": f"Bearer {hf_token}"}
@@ -94,29 +90,42 @@ def generate_image_hf(prompt):
     for model in models_to_try:
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
         try:
-            # Short timeout so it doesn't hang your app waiting for a dead server
-            resp = requests.post(API_URL, headers=headers, json=payload, timeout=15)
-            
+            # 8 SECOND TIMEOUT: This stops the app from infinitely freezing if HF is slow
+            resp = requests.post(API_URL, headers=headers, json=payload, timeout=8)
             if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', '').lower():
                 return resp.content, None
             elif resp.status_code == 503:
-                try:
-                    estimated_time = resp.json().get('estimated_time', 20)
-                    return None, f"⏳ The free server ({model}) is waking up. Please wait {int(estimated_time)} seconds and try again."
-                except:
-                    continue
+                continue # Skip sleeping, immediately jump to the bypass to save time
         except Exception:
-            continue
+            continue # If it times out or errors, instantly move on
 
-    # THE ULTIMATE BYPASS: Return a direct URL. 
-    # We will render this using raw HTML so the client's browser fetches it directly.
+    # THE ULTIMATE BYPASS: If servers are slow, offload the image request to the user's browser.
     seed = random.randint(1, 100000)
     fallback_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?seed={seed}&width=1024&height=1024&nologo=true"
     return fallback_url, None
 
-def generate_video_free(prompt, image_data=None):
-    error_msg = "Reality Check: There is NO truly free API for AI video generation. It costs massive server compute. To do this for free, you must download a model and run it locally on your own PC."
-    return None, error_msg
+def generate_video_free(prompt):
+    """Hits the free Hugging Face Video API."""
+    hf_token = get_key("HF_TOKEN", "hf_token")
+    if not hf_token:
+        return None, "🔑 Missing Hugging Face Token. Add it to generate videos."
+        
+    API_URL = "https://api-inference.huggingface.co/models/ali-vilab/text-to-video-ms-1.7b"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    payload = {"inputs": prompt}
+    
+    try:
+        # Video takes longer to process, so we give it 40 seconds
+        resp = requests.post(API_URL, headers=headers, json=payload, timeout=40)
+        
+        if resp.status_code == 200:
+            return resp.content, None
+        elif resp.status_code == 503:
+            return None, "⏳ The free video server is booting up. Please wait 30 seconds and click Generate again."
+        else:
+            return None, f"Video API Error {resp.status_code}: The free video model is currently overloaded. Please try again in a few minutes."
+    except Exception as e:
+        return None, "Timeout Error: The free video server took too long to respond. Please try again."
 
 def generate_tts_elevenlabs(script, voice_id, tone):
     api_key = get_elevenlabs_key()
@@ -314,12 +323,11 @@ def render():
                         status.update(label="✅ Image ready!", state="complete")
                         st.markdown('<div class="output-frame">', unsafe_allow_html=True)
                         
-                        # THE CRITICAL BROWSER BYPASS FIX
                         if isinstance(img_data, str) and img_data.startswith("http"):
-                            # Using raw HTML forces your browser to load it, bypassing Streamlit Server
+                            # This bypasses the loading lock completely by pushing the fetch directly to the user's browser
                             st.markdown(f'<img src="{img_data}" style="width:100%; border-radius:16px; margin-bottom:1rem;">', unsafe_allow_html=True)
                             st.markdown('</div>', unsafe_allow_html=True)
-                            st.info("💡 **Generated via Browser Bypass.** Right-click the image and select 'Save Image As...' to download.")
+                            st.info("💡 **Generated via Browser Bypass to avoid server overload.** Right-click the image and select 'Save Image As...' to download.")
                         else:
                             st.image(img_data, use_container_width=True)
                             st.markdown('</div>', unsafe_allow_html=True)
@@ -334,6 +342,17 @@ def render():
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
         st.markdown('<span class="mode-badge">🔄 Image → Image</span>', unsafe_allow_html=True)
         st.markdown("<p style='font-size:0.8rem;color:#ff6b6b;'>Note: Free tier models generate a new image based entirely on your text description.</p>", unsafe_allow_html=True)
+        
+        i2i_upload = st.file_uploader("Upload source image", 
+                                       type=["png","jpg","jpeg","webp"],
+                                       key="i2i_upload",
+                                       label_visibility="collapsed")
+        
+        if i2i_upload:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Original**")
+                st.image(i2i_upload, use_container_width=True)
         
         i2i_prompt = st.text_area(
             "Transformation Description",
@@ -363,7 +382,6 @@ def render():
                         status.update(label="✅ Generated!", state="complete")
                         st.markdown('<div class="output-frame">', unsafe_allow_html=True)
                         
-                        # THE CRITICAL BROWSER BYPASS FIX
                         if isinstance(img_data, str) and img_data.startswith("http"):
                             st.markdown(f'<img src="{img_data}" style="width:100%; border-radius:16px; margin-bottom:1rem;">', unsafe_allow_html=True)
                             st.markdown('</div>', unsafe_allow_html=True)
@@ -379,7 +397,7 @@ def render():
     # ── Tab 3: Text to Video ──────────────────────────────────────────────────
     with tabs[2]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">🎬 Text → Video</span>', unsafe_allow_html=True)
+        st.markdown('<span class="mode-badge">🎬 Text → Video (Free API)</span>', unsafe_allow_html=True)
         
         t2v_prompt = st.text_area(
             "Scene Description",
@@ -434,9 +452,17 @@ def render():
         if st.button("🎬 Generate Video + Audio", key="t2v_gen", use_container_width=True):
             if not t2v_prompt.strip():
                 st.warning("Please enter a scene description.")
+            elif not get_key("HF_TOKEN", "hf_token"):
+                st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
-                with st.status("🎬 Processing...", expanded=True) as status:
-                    video_data, v_err = generate_video_free(t2v_prompt.strip())
+                with st.status("🎬 Processing Free Video...", expanded=True) as status:
+                    final_prompt = t2v_prompt.strip()
+                    if client:
+                        st.write("✨ Enhancing prompt...")
+                        final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-video")
+                    
+                    st.write("🎬 Generating video via Hugging Face...")
+                    video_data, v_err = generate_video_free(final_prompt)
                     
                     audio_data = None
                     a_err = None
@@ -448,6 +474,14 @@ def render():
                     if v_err:
                         status.update(label="❌ Cannot Generate Video", state="error")
                         st.error(v_err)
+                    else:
+                        status.update(label="✅ Content ready!", state="complete")
+                        st.markdown('<div class="output-frame">', unsafe_allow_html=True)
+                        st.video(video_data)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        st.download_button("⬇️ Download Video", video_data, 
+                                          "ugc_video.mp4", "video/mp4",
+                                          use_container_width=True)
                     
                     if audio_data:
                         st.markdown("**🎙️ Voiceover Audio:**")
@@ -463,9 +497,8 @@ def render():
     # ── Tab 4: Image to Video ─────────────────────────────────────────────────
     with tabs[3]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">📽️ Image → Video</span>', unsafe_allow_html=True)
-        
-        st.warning("⚠️ See note on Text → Video tab: Completely free video generation APIs do not exist.")
+        st.markdown('<span class="mode-badge">📽️ Image → Video (Free Hack)</span>', unsafe_allow_html=True)
+        st.markdown("<p style='font-size:0.8rem;color:#ff6b6b;'>Note: The free tier API generates a new video based on your text description, not strictly locked to the image structure.</p>", unsafe_allow_html=True)
         
         i2v_upload = st.file_uploader("Upload image to animate",
                                        type=["png","jpg","jpeg","webp"],
@@ -475,9 +508,35 @@ def render():
         if i2v_upload:
             st.image(i2v_upload, use_container_width=True)
         
+        i2v_prompt = st.text_area(
+            "Animation Direction",
+            placeholder="e.g. Subtle camera zoom in, cinematic...",
+            height=100,
+            key="i2v_prompt",
+            label_visibility="collapsed"
+        )
+        
         if st.button("📽️ Animate Image", key="i2v_gen", use_container_width=True):
-            st.error("Reality Check: There is NO truly free API for AI video generation. It costs massive server compute. To do this for free, you must download a model and run it locally on your own PC.")
-            
+            if not i2v_prompt.strip():
+                st.warning("Please enter an animation description.")
+            elif not get_key("HF_TOKEN", "hf_token"):
+                st.error("🔑 Hugging Face Token Required.")
+            else:
+                with st.status("📽️ Animating your prompt via HF Free Video...", expanded=True) as status:
+                    video_data, v_err = generate_video_free(i2v_prompt.strip())
+                    
+                    if v_err:
+                        status.update(label="❌ Failed", state="error")
+                        st.error(v_err)
+                    else:
+                        status.update(label="✅ Animated!", state="complete")
+                        st.markdown('<div class="output-frame">', unsafe_allow_html=True)
+                        st.video(video_data)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        st.download_button("⬇️ Download Video", video_data,
+                                          "animated.mp4", "video/mp4",
+                                          use_container_width=True)
+                        
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
@@ -487,7 +546,7 @@ def render():
         
         with st.expander("Configure Additional APIs"):
             st.markdown("<small>Get a free token at huggingface.co</small>", unsafe_allow_html=True)
-            hf_key = st.text_input("Hugging Face Token (Images)", type="password",
+            hf_key = st.text_input("Hugging Face Token (Images/Video)", type="password",
                                     value=st.session_state.get("hf_token", ""),
                                     key="ugc_hf_key")
             if hf_key: st.session_state.hf_token = hf_key
