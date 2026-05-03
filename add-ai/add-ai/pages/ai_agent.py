@@ -70,10 +70,11 @@ def get_client():
     if not api_key:
         return None
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel('gemini-1.5-flash')
+    # UPDATED LINE: Using Gemini 3 Flash
+    return genai.GenerativeModel(model_name='gemini-3-flash')
 
 def encode_file_for_gemini(uploaded_file):
-    """Gemini specific file handling."""
+    """Encode uploaded file for Gemini."""
     data = uploaded_file.read()
     uploaded_file.seek(0)
     return {"mime_type": uploaded_file.type, "data": data}
@@ -86,7 +87,7 @@ def render():
                   border:1px solid rgba(0,245,212,0.2);border-radius:100px;
                   padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;
                   letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        ⚡ Real-time AI • Powered by Gemini Flash
+        ⚡ Real-time AI • Powered by Gemini 3
       </div>
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);
                   font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
@@ -316,7 +317,8 @@ def render():
             """, unsafe_allow_html=True)
             
             full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
-            model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=full_system)
+            # UPDATED LINE: Set system instruction
+            model = genai.GenerativeModel(model_name='gemini-3-flash', system_instruction=full_system)
             
             try:
                 # Convert history
@@ -327,7 +329,7 @@ def render():
                 
                 chat = model.start_chat(history=history)
                 
-                # Build content parts (text + files)
+                # Build content parts
                 parts = [user_input.strip()]
                 if uploaded:
                     for f in uploaded:
