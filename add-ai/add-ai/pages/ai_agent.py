@@ -70,11 +70,11 @@ def get_client():
     if not api_key:
         return None
     genai.configure(api_key=api_key)
-    # FIXED LINE: Using the standard stable ID
-    return genai.GenerativeModel(model_name='gemini-1.5-flash')
+    # Using the most stable model ID to avoid 404
+    return genai.GenerativeModel('gemini-1.5-flash')
 
-def encode_file_for_gemini(uploaded_file):
-    """Encode uploaded file for Gemini."""
+def encode_file(uploaded_file):
+    """Encode uploaded file for Gemini's native format."""
     data = uploaded_file.read()
     uploaded_file.seek(0)
     return {"mime_type": uploaded_file.type, "data": data}
@@ -161,18 +161,20 @@ def render():
         st.session_state.messages = []
     if "subject" not in st.session_state:
         st.session_state.subject = "⚙️ General / Mixed Subjects"
+    if "uploaded_files_cache" not in st.session_state:
+        st.session_state.uploaded_files_cache = []
 
     # ── API Key check ─────────────────────────────────────────────────────────
-    model_instance = get_client()
-    if not model_instance:
+    client_model = get_client()
+    if not client_model:
         st.markdown("""
         <div style="background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);
                     border-radius:16px;padding:1.25rem;margin:1rem 0;">
           <div style="color:#ff6b6b;font-family:'Syne',sans-serif;font-weight:700;margin-bottom:0.5rem;">
-            🔑 Google API Key Required
+            🔑 API Key Required
           </div>
           <div style="color:#9ca3af;font-size:0.9rem;">
-            Enter your Google API key in the sidebar. 
+            Enter your Google API key in the sidebar to start chatting. 
             Get one for free at <strong>aistudio.google.com</strong>
           </div>
         </div>
@@ -206,7 +208,7 @@ def render():
         if st.button("📤 Export", use_container_width=True):
             if st.session_state.messages:
                 export_text = "\n\n".join([
-                    f"{'YOU' if m['role']=='user' else 'ADD AI'}: {m['content']}"
+                    f"{'YOU' if m['role']=='user' else 'ADD AI'}: {m['content'] if isinstance(m['content'], str) else '[file + message]'}"
                     for m in st.session_state.messages
                 ])
                 st.download_button("💾 Download", export_text, "chat_export.txt", "text/plain")
@@ -227,6 +229,9 @@ def render():
                 Ask anything academic — or upload your files below
               </div>
             </div>
+            
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+                        gap:0.75rem;margin-bottom:1rem;">
             """, unsafe_allow_html=True)
             
             examples = [
@@ -248,10 +253,11 @@ def render():
         else:
             for msg in st.session_state.messages:
                 if msg["role"] == "user":
+                    content_text = msg["content"]
                     st.markdown(f"""
                     <div class="message-user">
                       <div class="message-label" style="color:#7b61ff;">You</div>
-                      <div style="color:#e8eaf6;line-height:1.6;">{msg["content"]}</div>
+                      <div style="color:#e8eaf6;line-height:1.6;">{content_text}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 else:
@@ -281,14 +287,18 @@ def render():
         )
         
         if uploaded and len(uploaded) > 10:
-            st.warning("⚠️ Maximum 10 files at a time.")
+            st.warning("⚠️ Maximum 10 files at a time. Only first 10 will be used.")
             uploaded = uploaded[:10]
+        
+        if uploaded:
+            file_pills = " ".join([f"<span style='background:rgba(0,245,212,0.1);border:1px solid rgba(0,245,212,0.2);border-radius:100px;padding:0.15rem 0.6rem;font-size:0.75rem;color:#00f5d4;'>📄 {f.name}</span>" for f in uploaded])
+            st.markdown(f"<div style='margin:0.5rem 0;display:flex;flex-wrap:wrap;gap:0.4rem;'>{file_pills}</div>", unsafe_allow_html=True)
         
         col_input, col_send = st.columns([6, 1])
         with col_input:
             user_input = st.text_area(
                 "Message",
-                placeholder="Ask anything...",
+                placeholder="Ask anything — homework help, problem solving, essay writing, code review...",
                 height=100,
                 label_visibility="collapsed",
                 key="chat_input"
@@ -299,6 +309,7 @@ def render():
         
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # ── Handle pending example click ──────────────────────────────────────────
     if "pending_message" in st.session_state:
         user_input = st.session_state.pending_message
         del st.session_state.pending_message
@@ -308,6 +319,9 @@ def render():
     if send and user_input and user_input.strip():
         st.session_state.messages.append({"role": "user", "content": user_input.strip()})
         
+        # Build prompt
+        full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, SUBJECT_PROMPTS['⚙️ General / Mixed Subjects'])}"
+        
         with st.spinner(""):
             st.markdown("""
             <div class="message-ai">
@@ -316,12 +330,14 @@ def render():
             </div>
             """, unsafe_allow_html=True)
             
-            full_system = f"{SYSTEM_BASE}\n\n{SUBJECT_PROMPTS.get(subject, '')}"
-            # FIXED LINE: Targeting stable Gemini 1.5 Flash
-            model = genai.GenerativeModel(model_name='gemini-1.5-flash', system_instruction=full_system)
-            
             try:
-                # Convert history
+                # Re-initialize model with the specific system instructions
+                model = genai.GenerativeModel(
+                    model_name='gemini-1.5-flash',
+                    system_instruction=full_system
+                )
+                
+                # Convert history for Gemini
                 history = []
                 for m in st.session_state.messages[:-1]:
                     role = "model" if m["role"] == "assistant" else "user"
@@ -329,30 +345,34 @@ def render():
                 
                 chat = model.start_chat(history=history)
                 
-                # Build content parts
-                parts = [user_input.strip()]
+                # Prepare message parts
+                message_parts = [user_input.strip()]
                 if uploaded:
                     for f in uploaded:
-                        parts.append(encode_file_for_gemini(f))
-
-                response = chat.send_message(parts)
+                        message_parts.append(encode_file(f))
+                
+                response = chat.send_message(message_parts)
                 
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": response.text
                 })
+                
             except Exception as e:
+                error_msg = str(e)
                 st.session_state.messages.append({
                     "role": "assistant", 
-                    "content": f"⚠️ Error: {str(e)}"
+                    "content": f"⚠️ Error: {error_msg}\n\nPlease check your API key and try again."
                 })
         
         st.rerun()
     
+    # ── Sidebar API key setup ─────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
         key_input = st.text_input("Google API Key", type="password",
+                                   placeholder="AIza...",
                                    value=st.session_state.get("google_key", ""),
                                    key="google_key_sidebar")
         if key_input:
