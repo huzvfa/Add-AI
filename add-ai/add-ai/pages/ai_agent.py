@@ -8,6 +8,27 @@ import time
 import mimetypes
 from pathlib import Path
 from dotenv import load_dotenv
+import requests
+from urllib.parse import quote
+
+def safe_ai_generate(client, prompt):
+    """Bypasses Gemini Quota 429 Errors by instantly falling back to an uncapped API."""
+    if client:
+        try:
+            return client.generate_content(prompt).text.strip()
+        except Exception:
+            pass # Quota exceeded or error, smoothly catch it and fall back
+            
+    # The 100% free, uncapped fallback (No API key needed)
+    try:
+        fallback_url = f"https://text.pollinations.ai/prompt/{quote(prompt)}?model=openai"
+        resp = requests.get(fallback_url, timeout=15)
+        if resp.status_code == 200:
+            return resp.text.strip()
+    except Exception:
+        pass
+    
+    return "Error reaching AI servers."
 
 load_dotenv()
 
