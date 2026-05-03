@@ -5,7 +5,7 @@ import json
 import os
 import time
 import io
-import requests
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import quote
@@ -23,18 +23,17 @@ load_dotenv()
 # ── Identity & Specialization ─────────────────────
 
 SUBJECT_PROMPTS = {
-    "🔬 Science & Engineering": "You are an expert science and engineering tutor. Break down complex concepts and include formulas.",
-    "📐 Mathematics": "You are a math tutor. Show full working using LaTeX.",
-    "💻 Computer Science": "You are a senior software engineer. Provide clean, debugged code.",
-    "⚙️ General / Mixed Subjects": "You are an advanced academic tutor."
+    "🔬 Science & Engineering": "Focus on scientific explanations and formulas.",
+    "📐 Mathematics": "Show step-by-step mathematical working.",
+    "💻 Computer Science": "Provide logical and structured explanations.",
+    "⚙️ General / Mixed Subjects": "Provide clear and detailed academic explanations."
 }
 
 SYSTEM_BASE = """You are Add AI — created by Huzaifa Baig.
 
 MISSION:
-- Help students using ONLY provided study material
-- If answer is not found, say: "Not found in provided files."
-- Be detailed and clear
+- Answer strictly using uploaded study material
+- If not found, say: "Not found in provided files."
 """
 
 # ── FILE EXTRACTION ─────────────────────
@@ -67,143 +66,129 @@ def extract_content(uploaded_file):
     uploaded_file.seek(0)
     return text
 
-
-# ── TEXT CHUNKING (FIX) ─────────────────────
+# ── TEXT CHUNKING ─────────────────────
 
 def chunk_text(text, size=3000):
     return [text[i:i+size] for i in range(0, len(text), size)]
 
+# ── LOCAL AI BRAIN (NO API) ─────────────────────
 
-# ── AI CALL (STABLE) ─────────────────────
+def local_ai_brain(messages):
+    question = ""
+    for m in reversed(messages):
+        if m["role"] == "user":
+            question = m["content"].lower()
+            break
 
-def call_independent_brain(messages):
-    payload = {
-        "messages": messages,
-        "model": "mistral",
-        "jsonMode": False
-    }
+    file_chunks = []
+    for m in messages:
+        if m["role"] == "system" and "[FILE PART" in m["content"]:
+            file_chunks.append(m["content"])
 
-    # Primary
-    try:
-        resp = requests.post(
-            "https://text.pollinations.ai/openai",
-            json=payload,
-            timeout=30
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if "choices" in data:
-                return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print("Primary failed:", e)
+    if not file_chunks:
+        return "⚠️ No study material uploaded."
 
-    # Fallback
-    try:
-        resp = requests.post(
-            "https://text.pollinations.ai/",
-            json=payload,
-            timeout=30
-        )
-        if resp.status_code == 200 and resp.text:
-            return resp.text.strip()
-    except Exception as e:
-        print("Fallback failed:", e)
+    q_words = set(re.findall(r'\w+', question))
 
-    return "⚠️ Add AI failed to generate a response. Try again."
+    scored = []
 
+    for chunk in file_chunks:
+        chunk_lower = chunk.lower()
+        words = set(re.findall(r'\w+', chunk_lower))
+        score = len(q_words.intersection(words))
 
-# ── UI (UNCHANGED) ─────────────────────
+        if score > 0:
+            scored.append((score, chunk))
+
+    if not scored:
+        return "Not found in provided files."
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    best_chunks = [c for _, c in scored[:3]]
+
+    answer = "📘 **Answer from your study material:**\n\n"
+
+    for chunk in best_chunks:
+        cleaned = chunk.split("]\n", 1)[-1]
+        answer += cleaned[:800] + "\n\n---\n\n"
+
+    return answer.strip()
+
+# ── UI ─────────────────────
 
 def render():
     st.markdown("""
-    <div style="text-align:center;padding:2rem 0 1rem;position:relative;z-index:1;">
+    <div style="text-align:center;padding:2rem 0 1rem;">
       <div style="display:inline-block;background:rgba(0,245,212,0.08);border:1px solid rgba(0,245,212,0.2);border-radius:100px;padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
         ⚡ Autonomous Core • Created by Huzaifa Baig
       </div>
-      <h1 style="font-family:'Syne',sans-serif;font-size:clamp(2rem,5vw,3.5rem);font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
-        <span style="background:linear-gradient(135deg,#e8eaf6,#ffffff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Your Academic</span><br>
-        <span style="background:linear-gradient(135deg,#00f5d4,#7b61ff,#ff6b6b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Super-Intelligence</span> 
-      </h1>
-      <p style="color:#6b7280;font-size:1.05rem;">Manage Your Study Ally</p>
+      <h1>Your Academic Super-Intelligence</h1>
+      <p>Manage Your Study Ally</p>
     </div>
     """, unsafe_allow_html=True)
 
-    if "messages" not in st.session_state: st.session_state.messages = []
-    if "pending_message" not in st.session_state: st.session_state.pending_message = ""
-    if "chat_input_widget" not in st.session_state: st.session_state.chat_input_widget = ""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "pending_message" not in st.session_state:
+        st.session_state.pending_message = ""
+    if "chat_input_widget" not in st.session_state:
+        st.session_state.chat_input_widget = ""
 
     def submit_message():
         if st.session_state.chat_input_widget.strip():
             st.session_state.pending_message = st.session_state.chat_input_widget
         st.session_state.chat_input_widget = ""
 
-    col1, col2, col3 = st.columns([3, 1, 1])
+    col1, col2, col3 = st.columns([3,1,1])
+
     with col1:
         subject = st.selectbox("Specialization", list(SUBJECT_PROMPTS.keys()), label_visibility="collapsed")
+
     with col2:
-        if st.button("🗑️ Clear Chat", use_container_width=True): 
+        if st.button("🗑️ Clear Chat"):
             st.session_state.messages = []
             st.rerun()
+
     with col3:
-        if st.button("📤 Export", use_container_width=True):
-            export_text = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.messages])
-            st.download_button("💾 Save", export_text, "add_ai_chat.txt")
+        if st.button("📤 Export"):
+            export_text = "\n\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
+            st.download_button("Save", export_text, "chat.txt")
 
-    chat_container = st.container()
-    with chat_container:
-        for msg in st.session_state.messages:
-            cls, lbl, clr = ("message-user", "You", "#7b61ff") if msg["role"] == "user" else ("message-ai", "⚡ Add AI", "#00f5d4")
-            st.markdown(f"""<div class="{cls}"><div class="message-label" style="color:{clr};">{lbl}</div>{msg["content"]}</div>""", unsafe_allow_html=True)
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            st.markdown(f"**You:** {msg['content']}")
+        else:
+            st.markdown(f"**Add AI:** {msg['content']}")
 
-    st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
+    uploaded = st.file_uploader("Upload Study Materials", accept_multiple_files=True)
 
-    with st.container():
-        st.markdown('<div style="background:rgba(13,17,23,0.9);border:1px solid rgba(0,245,212,0.15);border-radius:20px;padding:1rem;">', unsafe_allow_html=True)
-        uploaded = st.file_uploader("📎 Upload Study Materials", accept_multiple_files=True, key="file_uploader", label_visibility="collapsed")
+    st.text_area("Message", key="chat_input_widget")
 
-        col_i, col_s = st.columns([6, 1])
-        with col_i:
-            st.text_area("Message", placeholder="Explain this file in detail...", height=100, label_visibility="collapsed", key="chat_input_widget")
-        with col_s:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            st.button("Send ➤", use_container_width=True, on_click=submit_message)
+    st.button("Send ➤", on_click=submit_message)
 
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── FIXED LOGIC ONLY ─────────────────────
+    # ── MAIN LOGIC ─────────────────────
 
     if st.session_state.pending_message:
         user_input = st.session_state.pending_message
         st.session_state.pending_message = ""
 
-        st.session_state.messages.append({"role": "user", "content": user_input.strip()})
+        st.session_state.messages.append({"role": "user", "content": user_input})
 
-        with st.spinner("Add AI analyzing..."):
+        with st.spinner("Analyzing..."):
 
-            # Extract files
             file_data = "\n".join([extract_content(f) for f in uploaded]) if uploaded else ""
 
-            # System message
             system_msg = {
                 "role": "system",
-                "content": f"""
-{SYSTEM_BASE}
-
-{SUBJECT_PROMPTS.get(subject, '')}
-
-STRICT RULE:
-- Answer ONLY using uploaded material
-- If not found, say: Not found in provided files
-"""
+                "content": SYSTEM_BASE + "\n" + SUBJECT_PROMPTS.get(subject, "")
             }
 
             api_msgs = [system_msg]
 
-            # Short memory
             for m in st.session_state.messages[-4:]:
                 api_msgs.append(m)
 
-            # Inject file chunks
             if file_data:
                 chunks = chunk_text(file_data)
                 for i, chunk in enumerate(chunks[:5]):
@@ -212,38 +197,19 @@ STRICT RULE:
                         "content": f"[FILE PART {i+1}]\n{chunk}"
                     })
 
-            # Grounded question
             api_msgs.append({
                 "role": "user",
-                "content": f"""
-USER QUESTION:
-{user_input}
-
-Answer strictly using the uploaded material above.
-"""
+                "content": user_input
             })
 
-            response = call_independent_brain(api_msgs)
+            response = local_ai_brain(api_msgs)
 
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response
+            })
 
         st.rerun()
-
-    components.html("""<script>
-    const doc = window.parent.document;
-    const textareas = doc.querySelectorAll('textarea');
-    if(textareas.length > 0) {
-        textareas[0].addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                const buttons = Array.from(doc.querySelectorAll('button'));
-                const sendBtn = buttons.find(b => b.innerText.includes('Send ➤'));
-                if (sendBtn) sendBtn.click();
-            }
-        });
-    }
-    </script>""", height=0)
-
 
 if __name__ == "__main__":
     render()
