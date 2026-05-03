@@ -46,11 +46,13 @@ def get_key(env_var_name, session_state_name):
     """Aggressively checks for keys across Sidebar, Streamlit Secrets, and .env"""
     if st.session_state.get(session_state_name):
         return st.session_state[session_state_name]
+    
     try:
         if env_var_name in st.secrets:
             return st.secrets[env_var_name]
     except Exception:
         pass
+        
     return os.environ.get(env_var_name, "")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -74,14 +76,24 @@ def enhance_prompt_with_gemini(client, prompt, mode):
         return prompt
 
 def generate_image_hf(prompt):
-    """Uses Ungated HF Models with an 8-Second Hard Timeout to prevent loading freezes."""
+    """10-Server Image Cascade + Browser Bypass."""
     hf_token = get_key("HF_TOKEN", "hf_token")
+    
     if not hf_token:
         return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar or Streamlit Secrets."
     
+    # 10 Image Models to cascade through
     models_to_try = [
         "stabilityai/stable-diffusion-xl-base-1.0",
-        "prompthero/openjourney"
+        "prompthero/openjourney",
+        "stabilityai/stable-diffusion-3.5-large",
+        "runwayml/stable-diffusion-v1-5",
+        "black-forest-labs/FLUX.1-schnell",
+        "stabilityai/stable-diffusion-2-1",
+        "SG161222/Realistic_Vision_V1.4",
+        "dreamlike-art/dreamlike-diffusion-1.0",
+        "Wavymulder/Analog-Diffusion",
+        "Lykon/DreamShaper"
     ]
     
     headers = {"Authorization": f"Bearer {hf_token}"}
@@ -91,28 +103,37 @@ def generate_image_hf(prompt):
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
         try:
             resp = requests.post(API_URL, headers=headers, json=payload, timeout=8)
+            
             if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', '').lower():
                 return resp.content, None
-            elif resp.status_code == 503:
-                continue 
+            else:
+                continue # Immediately jump to next server on error/overload
         except Exception:
-            continue
+            continue # Immediately jump to next server on timeout
 
-    # BROWSER BYPASS: Offload to client browser if HF fails
+    # ULTIMATE BYPASS: If all 10 servers fail, return the direct browser URL
     seed = random.randint(1, 100000)
     fallback_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?seed={seed}&width=1024&height=1024&nologo=true"
     return fallback_url, None
 
 def generate_video_free(prompt):
-    """Video Model Cascade: Tries 3 different free video servers. If one is down (404/503), it jumps to the next."""
+    """10-Server Video Cascade."""
     hf_token = get_key("HF_TOKEN", "hf_token")
     if not hf_token:
-        return None, "🔑 Missing Hugging Face Token. Add it in settings to generate free videos."
+        return None, "🔑 Missing Hugging Face Token. Add it in the sidebar to generate free videos."
         
+    # 10 Video Models to cascade through
     models_to_try = [
         "damo-vilab/text-to-video-ms-1.7b",
+        "ali-vilab/text-to-video-ms-1.7b",
         "cerspense/zeroscope_v2_576w",
-        "ByteDance/ModelScope-text-to-video-synthesis"
+        "ByteDance/ModelScope-text-to-video-synthesis",
+        "THUDM/CogVideoX-2b",
+        "THUDM/CogVideoX-5b",
+        "hotshotco/Hotshot-XL",
+        "cerspense/zeroscope_v2_XL",
+        "camenduru/text2-video-zero",
+        "mcmonkey/zeroscope-v2-576w"
     ]
     
     headers = {"Authorization": f"Bearer {hf_token}"}
@@ -121,18 +142,17 @@ def generate_video_free(prompt):
     for model in models_to_try:
         API_URL = f"https://api-inference.huggingface.co/models/{model}"
         try:
-            # Video takes longer, allowing 15 seconds per model before jumping
             resp = requests.post(API_URL, headers=headers, json=payload, timeout=15)
             
             if resp.status_code == 200:
                 return resp.content, None
-            elif resp.status_code == 503 or resp.status_code == 404:
-                continue # Model is overloaded or removed, instantly try the next one
+            else:
+                continue # Immediately jump to next server on error/overload
         except Exception:
-            continue # Timeout, instantly try the next one
+            continue # Immediately jump to next server on timeout
 
-    # If ALL 3 free models are down/overloaded, fail gracefully without crashing the app
-    return None, "Server Alert: All 3 free video servers are currently at maximum global capacity. Video AI requires massive GPU power and free queues fill up fast. Please wait 60 seconds and try again."
+    return None, "Server Alert: All 10 free video servers are currently at maximum capacity. Please wait 60 seconds and try again."
+
 
 def generate_tts_elevenlabs(script, voice_id, tone):
     api_key = get_elevenlabs_key()
@@ -310,7 +330,7 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
             else:
-                with st.status("🎨 Creating your UGC image...", expanded=True) as status:
+                with st.status("🎨 Creating your UGC image via AI...", expanded=True) as status:
                     final_prompt = t2i_prompt.strip()
                     if t2i_enhance and client:
                         st.write("✨ Enhancing prompt with Gemini...")
@@ -318,7 +338,7 @@ def render():
                             f"[Style: {t2i_style}] {final_prompt}", "text-image")
                         st.write(f"📝 Enhanced: *{final_prompt[:100]}...*")
                     
-                    st.write("🖼️ Connecting to Image Engines...")
+                    st.write("🖼️ Connecting to 10-Server Image Cascade...")
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     
                     img_data, err = generate_image_hf(final_prompt)
@@ -467,7 +487,7 @@ def render():
                         st.write("✨ Enhancing prompt...")
                         final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-video")
                     
-                    st.write("🎬 Generating video (Searching for open server slot)...")
+                    st.write("🎬 Searching 10 free servers for an open slot...")
                     video_data, v_err = generate_video_free(final_prompt)
                     
                     audio_data = None
@@ -478,7 +498,7 @@ def render():
                         audio_data, a_err = generate_tts_elevenlabs(t2v_script, voice_id, tone)
                     
                     if v_err:
-                        status.update(label="❌ Cannot Generate Video", state="error")
+                        status.update(label="❌ All 10 Servers Full", state="error")
                         st.error(v_err)
                     else:
                         status.update(label="✅ Content ready!", state="complete")
@@ -528,11 +548,11 @@ def render():
             elif not get_key("HF_TOKEN", "hf_token"):
                 st.error("🔑 Hugging Face Token Required.")
             else:
-                with st.status("📽️ Animating your prompt via HF Cascade...", expanded=True) as status:
+                with st.status("📽️ Animating your prompt via 10-Server Cascade...", expanded=True) as status:
                     video_data, v_err = generate_video_free(i2v_prompt.strip())
                     
                     if v_err:
-                        status.update(label="❌ Failed", state="error")
+                        status.update(label="❌ All 10 Servers Full", state="error")
                         st.error(v_err)
                     else:
                         status.update(label="✅ Animated!", state="complete")
