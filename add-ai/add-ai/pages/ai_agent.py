@@ -1,11 +1,11 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import io
-import requests
-from urllib.parse import quote
+import os
+import time
 from dotenv import load_dotenv
 
-# File Extraction Libraries (Safely imported)
+# ── Safe Library Imports ──
 try:
     from pypdf import PdfReader
     HAS_PDF = True
@@ -24,6 +24,12 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
+try:
+    from duckduckgo_search import DDGS
+    HAS_DDGS = True
+except ImportError:
+    HAS_DDGS = False
+
 load_dotenv()
 
 # ════════════════════════════════════════════════════════════════
@@ -39,7 +45,7 @@ Your identity is strictly {APP_NAME}. You are NOT ChatGPT, OpenAI, Google, Gemin
 You are a general-purpose conversational AI, but your primary directive is being a brilliant, student-centric study helper.
 If the user provides SOURCE MATERIAL, analyze it deeply and base your answers on it.
 If no files are provided, act as a comprehensive, highly intelligent assistant on any topic.
-Be concise, direct, and fast."""
+Be concise, direct, and incredibly helpful."""
 
 # ════════════════════════════════════════════════════════════════
 #  FILE EXTRACTION (REAL-TIME)
@@ -68,44 +74,50 @@ def extract_text(uploaded_file) -> str:
     except Exception as e:
         result = f"[Error reading file: {str(e)}]"
 
-    return f"\n--- START OF FILE: {name} ---\n{result}\n--- END OF FILE ---\n"
+    return f"\n--- FILE: {name} ---\n{result}\n"
 
 # ════════════════════════════════════════════════════════════════
-#  HIGH-SPEED ENGINE (SUB-2 SECOND TARGET)
+#  HIGH-SPEED KEYLESS ENGINE (DDGS PROXY)
 # ════════════════════════════════════════════════════════════════
 
-def call_add_ai_engine(messages):
-    """Hits the free inference node with strict timeouts for maximum speed."""
-    
+def call_add_ai_engine(user_query, chat_history, file_data):
+    """Uses DuckDuckGo Search's hidden keyless AI chat for lightning-fast, ultra-smart responses."""
+    if not HAS_DDGS:
+        return "⚠️ CRITICAL ERROR: You must add 'duckduckgo-search>=6.1.7' to your requirements.txt file."
+
     # 1. LOCAL INSTANT INTERCEPT (0.01 seconds)
-    last_msg = messages[-1]["content"].lower()
+    q_lower = user_query.lower()
     identity_triggers = ["who are you", "who made you", "creator", "developer", "who created you"]
-    if any(trigger in last_msg for trigger in identity_triggers):
+    if any(trigger in q_lower for trigger in identity_triggers):
         return f"I am {APP_NAME}, a sovereign artificial intelligence built entirely by {CREATOR}."
 
-    # 2. FAST NETWORK REQUEST
-    payload = {"messages": messages, "model": "mistral", "jsonMode": False}
+    # 2. BUILD THE CONTEXT PAYLOAD
+    prompt = f"{SYSTEM_PROMPT}\n\n"
     
-    # Strict 4-second timeout to prevent hanging. 
+    # Safely inject up to 10,000 characters of file data (smart enough to handle assignments, small enough to be fast)
+    if file_data:
+        if len(file_data) > 10000:
+            file_data = file_data[:10000] + "\n...[Content Truncated for Speed]..."
+        prompt += f"USER UPLOADED SOURCE MATERIAL:\n{file_data}\n\n"
+        
+    # Inject last 2 messages for memory
+    for m in chat_history[-2:]:
+        prompt += f"{m['role'].upper()}: {m['content']}\n"
+        
+    prompt += f"USER: {user_query}\nASSISTANT:"
+
+    # 3. EXECUTE HIGH-SPEED INFERENCE
     try:
-        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=4)
-        if resp.status_code == 200:
-            result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            if result:
-                return result
-    except Exception:
-        pass
-            
-    try:
-        resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=4)
-        if resp.status_code == 200:
-            result = resp.text.strip()
-            if result:
-                return result
-    except Exception:
-        pass
-            
-    return "⚠️ The network was too slow to meet the 2-second speed requirement. Please try a shorter prompt."
+        # Utilizing the keyless AI tunnel. 'claude-3-haiku' is utilized for sub-2-second speed.
+        response = DDGS().chat(prompt, model='claude-3-haiku')
+        return response
+    except Exception as e:
+        # Fallback to default model if haiku fails
+        try:
+            response = DDGS().chat(prompt)
+            return response
+        except Exception as e2:
+            return "⚠️ The secure proxy is currently resetting. Please wait 3 seconds and hit Send again."
 
 # ════════════════════════════════════════════════════════════════
 #  STREAMLIT UI
@@ -189,7 +201,7 @@ def render():
         st.session_state.pending_prompt = ""
         st.session_state.chat_messages.append({"role": "user", "content": user_query})
         
-        # Flashes logo instantly while waiting for network, but DOES NOT force a sleep delay
+        # Logo animation renders instantly
         anim_placeholder = st.empty()
         anim_placeholder.markdown(f"""
         <div style="text-align:center; padding: 2rem;">
@@ -201,24 +213,10 @@ def render():
         # Real-time extraction
         file_data = "".join([extract_text(f) for f in uploaded_files]) if uploaded_files else ""
         
-        # CRITICAL FIX FOR SPEED: Cut payload from 6000 to 1000 characters so the server digests it instantly
-        if len(file_data) > 1000:
-            file_data = file_data[:1000] + "\n...[Content clipped for high-speed processing]..."
-            
-        prompt_context = SYSTEM_PROMPT
-        if file_data:
-            prompt_context += f"\n\nUSER UPLOADED SOURCE MATERIAL. YOU MUST ANALYZE THIS TO ANSWER:\n{file_data}"
+        # Execute instantly through DDGS
+        response = call_add_ai_engine(user_query, st.session_state.chat_messages[:-1], file_data)
         
-        api_msgs = [{"role": "system", "content": prompt_context}]
-        
-        # Only send the last 3 messages to keep payload feather-light and fast
-        for msg in st.session_state.chat_messages[-3:]:
-            api_msgs.append({"role": msg["role"], "content": msg["content"]})
-        
-        # Execute instantly
-        response = call_add_ai_engine(api_msgs)
-        
-        anim_placeholder.empty() # Remove animation immediately once response arrives
+        anim_placeholder.empty() # Remove animation immediately
         st.session_state.chat_messages.append({"role": "assistant", "content": response})
         st.rerun()
 
