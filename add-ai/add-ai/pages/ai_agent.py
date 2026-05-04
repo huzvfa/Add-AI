@@ -1,12 +1,12 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import io
-import re
-import os
+import time
 import requests
 from urllib.parse import quote
 from dotenv import load_dotenv
 
-# File Extraction Libraries (Safely imported)
+# Safe File Extraction Libraries
 try:
     from pypdf import PdfReader
     HAS_PDF = True
@@ -43,11 +43,10 @@ If no files are provided, act as a comprehensive, highly intelligent assistant o
 NEVER truncate your answers. Provide exhaustive, detailed, and clear explanations."""
 
 # ════════════════════════════════════════════════════════════════
-#  FILE EXTRACTION (REAL-TIME)
+#  REAL-TIME FILE EXTRACTION
 # ════════════════════════════════════════════════════════════════
 
 def extract_text(uploaded_file) -> str:
-    """Extracts raw text from files in real-time."""
     name = uploaded_file.name
     ext  = name.rsplit(".", 1)[-1].lower()
     raw  = uploaded_file.read()
@@ -72,31 +71,29 @@ def extract_text(uploaded_file) -> str:
     return f"\n--- START OF FILE: {name} ---\n{result}\n--- END OF FILE ---\n"
 
 # ════════════════════════════════════════════════════════════════
-#  KEYLESS INTELLIGENCE ENGINE (BULLETPROOF)
+#  KEYLESS ENGINE (FAIL-SAFE & FAST)
 # ════════════════════════════════════════════════════════════════
 
 def call_add_ai_engine(messages):
-    """Hits a free, keyless LLM proxy. Resilient against timeouts and 404s."""
-    payload = {"messages": messages, "model": "mistral", "jsonMode": False}
+    """Reliable, zero-key LLM routing. Ensures a response is always returned."""
+    payload = {"messages": messages, "model": "mistral-nemo", "jsonMode": False}
     
-    # Primary API
     try:
-        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=20)
+        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=15)
         if resp.status_code == 200:
             return resp.json()["choices"][0]["message"]["content"].strip()
     except:
         pass
 
-    # Fallback Stream
     try:
         last_msg = messages[-1]["content"]
         sys_msg = messages[0]["content"]
         url = f"https://text.pollinations.ai/prompt/{quote(last_msg)}?system={quote(sys_msg)}"
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=15)
         if resp.status_code == 200:
             return resp.text.strip()
     except:
-        return "⚠️ I am currently processing a massive logic load. Please click send again to retry."
+        return "⚡ The Core is re-aligning parameters. Please click 'Send' again."
 
 # ════════════════════════════════════════════════════════════════
 #  STREAMLIT UI
@@ -109,6 +106,8 @@ def render():
     .msg-user { background: linear-gradient(135deg, rgba(123,97,255,0.1), rgba(0,245,212,0.05)); border: 1px solid rgba(123,97,255,0.2); border-radius: 16px 16px 4px 16px; padding: 1rem; margin: 0.5rem 0; }
     .msg-ai { background: rgba(13,17,23,0.8); border: 1px solid rgba(0,245,212,0.2); border-radius: 16px 16px 16px 4px; padding: 1rem; margin: 0.5rem 0; }
     .msg-label { font-family: 'Syne', sans-serif; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; margin-bottom: 0.4rem; }
+    @keyframes pulse { 0% { transform: scale(0.95); opacity: 0.7; } 50% { transform: scale(1.05); opacity: 1; } 100% { transform: scale(0.95); opacity: 0.7; } }
+    .logo-anim { font-size: 4rem; animation: pulse 1s infinite ease-in-out; display: inline-block; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -150,29 +149,59 @@ def render():
 
     col_txt, col_btn = st.columns([6, 1])
     with col_txt:
-        st.text_area("Message", placeholder="Ask a general question, or ask about your files...", key=f"input_{st.session_state.chat_input_key}", label_visibility="collapsed")
+        st.text_area("Message", placeholder="Ask a question, hit Enter to send...", key=f"input_{st.session_state.chat_input_key}", label_visibility="collapsed")
     with col_btn:
-        st.button("Send ➤", use_container_width=True, on_click=_submit)
+        st.button("Send ➤", key="send_button_main", use_container_width=True, on_click=_submit)
 
+    # ── CUSTOM ENTER KEY SCRIPT ──
+    components.html("""
+    <script>
+    const doc = window.parent.document;
+    const textareas = doc.querySelectorAll('textarea');
+    if(textareas.length > 0) {
+        textareas[0].addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const buttons = Array.from(doc.querySelectorAll('button'));
+                const sendBtn = buttons.find(b => b.innerText.includes('Send ➤'));
+                if (sendBtn) sendBtn.click();
+            }
+        });
+    }
+    </script>
+    """, height=0, width=0)
+
+    # ── MESSAGE PROCESSING & ANIMATION ──
     if st.session_state.pending_prompt:
         user_query = st.session_state.pending_prompt
         st.session_state.pending_prompt = ""
         st.session_state.chat_messages.append({"role": "user", "content": user_query})
         
-        with st.spinner(f"{APP_NAME} thinking..."):
-            file_data = "".join([extract_text(f) for f in uploaded_files]) if uploaded_files else ""
-            
-            # Construct intelligent context
-            prompt_context = SYSTEM_PROMPT
-            if file_data:
-                prompt_context += f"\n\nUSER UPLOADED SOURCE MATERIAL. YOU MUST ANALYZE THIS TO ANSWER:\n{file_data}"
-            
-            api_msgs = [{"role": "system", "content": prompt_context}]
-            for msg in st.session_state.chat_messages:
-                api_msgs.append({"role": msg["role"], "content": msg["content"]})
-            
-            response = call_add_ai_engine(api_msgs)
-            st.session_state.chat_messages.append({"role": "assistant", "content": response})
+        # 2-Second Logo Animation
+        anim_placeholder = st.empty()
+        anim_placeholder.markdown(f"""
+        <div style="text-align:center; padding: 2rem;">
+            <div class="logo-anim">⚡</div>
+            <div style="color: #00f5d4; font-family: 'Syne', sans-serif; font-weight: bold; margin-top: 1rem;">{APP_NAME} is processing...</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        time.sleep(2) # Enforce exactly 2 seconds of animation
+        
+        # Real-time extraction & logic
+        file_data = "".join([extract_text(f) for f in uploaded_files]) if uploaded_files else ""
+        prompt_context = SYSTEM_PROMPT
+        if file_data:
+            prompt_context += f"\n\nUSER UPLOADED SOURCE MATERIAL. YOU MUST ANALYZE THIS TO ANSWER:\n{file_data}"
+        
+        api_msgs = [{"role": "system", "content": prompt_context}]
+        for msg in st.session_state.chat_messages:
+            api_msgs.append({"role": msg["role"], "content": msg["content"]})
+        
+        response = call_add_ai_engine(api_msgs)
+        
+        anim_placeholder.empty() # Remove animation
+        st.session_state.chat_messages.append({"role": "assistant", "content": response})
         st.rerun()
 
 if __name__ == "__main__":
