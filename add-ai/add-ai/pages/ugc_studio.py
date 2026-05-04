@@ -1,725 +1,279 @@
 import streamlit as st
-import requests
-import base64
+import io
 import os
+import base64
 import time
-import json
-from io import BytesIO
+import hashlib
+import tempfile
+from pathlib import Path
 
-# ── Voice Agents ─────────────────────────────────────────────────────────────
+# ── Optional local model imports (graceful fallbacks) ────────────────────────
+try:
+    import torch
+    HAS_TORCH = True
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+except ImportError:
+    HAS_TORCH = False
+    DEVICE = "cpu"
+
+try:
+    from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
+    HAS_DIFFUSERS = True
+except ImportError:
+    HAS_DIFFUSERS = False
+
+try:
+    import pyttsx3
+    HAS_TTS = True
+except ImportError:
+    HAS_TTS = False
+
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
+try:
+    import cv2
+    import numpy as np
+    HAS_CV = True
+except ImportError:
+    HAS_CV = False
+
+try:
+    import mediapipe as mp
+    HAS_MEDIAPIPE = True
+except ImportError:
+    HAS_MEDIAPIPE = False
+
+# ════════════════════════════════════════════════════════════════
+#  ENGINE IDENTITY
+# ════════════════════════════════════════════════════════════════
+
+ENGINE_NAME = "ADDCORE-VISUAL"
+CREATOR     = "Huzaifa Baig"
+
+# ════════════════════════════════════════════════════════════════
+#  VOICE AGENTS — local TTS, no APIs
+# ════════════════════════════════════════════════════════════════
 
 VOICE_AGENTS = {
     "Male": {
-        "Marcus (Deep & Authoritative)": "pNInz6obpgDQGcFmaJgB",
-        "James (Warm & Professional)": "VR6AewLTigWG4xSOukaG",
-        "Liam (Young & Energetic)": "TX3LPaxmHKxFdv7VOQHJ",
-        "Ethan (Smooth & Confident)": "bVMeCyTHy58xNoL34h3p",
-        "Noah (Casual & Friendly)": "ErXwobaYiN019PkySvjV",
+        "Marcus (Deep & Authoritative)": {"rate": 150, "pitch": 0.85, "voice_idx": 0},
+        "James (Warm & Professional)":   {"rate": 165, "pitch": 0.95, "voice_idx": 0},
+        "Liam (Young & Energetic)":      {"rate": 185, "pitch": 1.05, "voice_idx": 0},
+        "Ethan (Smooth & Confident)":    {"rate": 160, "pitch": 0.90, "voice_idx": 0},
+        "Noah (Casual & Friendly)":      {"rate": 170, "pitch": 1.00, "voice_idx": 0},
     },
     "Female": {
-        "Aria (Clear & Professional)": "EXAVITQu4vr4xnSDxMaL",
-        "Sofia (Warm & Empathetic)": "21m00Tcm4TlvDq8ikWAM",
-        "Luna (Energetic & Bright)": "AZnzlk1XvdvUeBnXmlld",
-        "Emma (Calm & Reassuring)": "MF3mGyEYCl7XYWbV9V6O",
-        "Zoe (Youthful & Vibrant)": "ThT5KcBeYPX3keUQqHPh",
+        "Aria (Clear & Professional)":  {"rate": 170, "pitch": 1.10, "voice_idx": 1},
+        "Sofia (Warm & Empathetic)":    {"rate": 160, "pitch": 1.05, "voice_idx": 1},
+        "Luna (Energetic & Bright)":    {"rate": 190, "pitch": 1.15, "voice_idx": 1},
+        "Emma (Calm & Reassuring)":     {"rate": 150, "pitch": 1.00, "voice_idx": 1},
+        "Zoe (Youthful & Vibrant)":     {"rate": 195, "pitch": 1.20, "voice_idx": 1},
     }
 }
 
 TONE_DESCRIPTIONS = {
-    "Natural": "conversational, natural delivery",
-    "Enthusiastic": "high energy, excited, enthusiastic",
+    "Natural":      "conversational, natural delivery",
+    "Enthusiastic": "high energy, excited",
     "Professional": "formal, polished, corporate",
-    "Dramatic": "theatrical, cinematic, dramatic pauses",
-    "Calm": "slow, calm, meditative",
-    "Persuasive": "sales-oriented, compelling, urgent",
+    "Dramatic":     "theatrical, cinematic",
+    "Calm":         "slow, calm, meditative",
+    "Persuasive":   "sales-oriented, compelling",
 }
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+TONE_RATE_MOD = {
+    "Natural": 1.0, "Enthusiastic": 1.15, "Professional": 0.95,
+    "Dramatic": 0.85, "Calm": 0.80, "Persuasive": 1.05,
+}
 
-def get_replicate_token():
-    return os.environ.get("REPLICATE_API_TOKEN") or st.session_state.get("replicate_key", "")
-
-def get_elevenlabs_key():
-    return os.environ.get("ELEVENLABS_API_KEY") or st.session_state.get("elevenlabs_key", "")
+# ════════════════════════════════════════════════════════════════
+#  AUTONOMOUS PROMPT ENHANCEMENT
+# ════════════════════════════════════════════════════════════════
 
 _STYLE_MODIFIERS = {
-    "Lifestyle / Authentic": "golden hour lighting, authentic lifestyle, relatable, warm tones, soft bokeh",
-    "Product Showcase":      "clean product shot, studio lighting, sharp focus, neutral background, professional",
-    "Before/After":          "split composition, transformation theme, contrast lighting, dramatic reveal",
-    "Cinematic":             "cinematic wide shot, dramatic lighting, film grain, anamorphic lens, epic mood, 4K",
-    "Social Media Native":   "vertical format, bright colors, trendy aesthetic, eye-catching, UGC native feel",
-    "Minimalist":            "minimalist composition, negative space, clean lines, muted palette, elegant",
-}
-_MOTION_WORDS = {
-    "Subtle":   "very subtle gentle motion, barely noticeable animation",
-    "Gentle":   "smooth gentle camera drift, soft motion, calm movement",
-    "Moderate": "moderate camera movement, steady pan, natural motion",
-    "Dynamic":  "dynamic camera movement, energetic motion, cinematic tracking",
-    "Intense":  "intense fast motion, dramatic camera shake, high energy",
+    "Lifestyle / Authentic": "golden hour lighting, authentic lifestyle, warm tones, soft bokeh",
+    "Product Showcase":      "clean product shot, studio lighting, sharp focus, neutral background",
+    "Before/After":          "split composition, transformation theme, dramatic reveal",
+    "Cinematic":             "cinematic wide shot, dramatic lighting, film grain, 4K",
+    "Social Media Native":   "vertical format, bright colors, trendy aesthetic, UGC native",
+    "Minimalist":            "minimalist composition, negative space, clean lines, elegant",
 }
 
-def enhance_prompt_locally(prompt: str, mode: str, style: str = "", motion: str = "") -> str:
-    """Autonomous prompt enhancement — no external AI needed."""
+_MOTION_WORDS = {
+    "Subtle":   "very subtle gentle motion",
+    "Gentle":   "smooth gentle camera drift",
+    "Moderate": "moderate camera movement, steady pan",
+    "Dynamic":  "dynamic camera movement, energetic motion",
+    "Intense":  "intense fast motion, high energy",
+}
+
+def enhance_prompt(prompt: str, mode: str, style: str = "", motion: str = "") -> str:
     base = prompt.strip().rstrip(".")
     if mode == "text-image":
-        style_mod = _STYLE_MODIFIERS.get(style, "authentic UGC style, lifestyle aesthetic")
-        return f"{base}, {style_mod}, high resolution, professional photography, viral content quality"[:480]
+        mod = _STYLE_MODIFIERS.get(style, "authentic UGC style")
+        return f"{base}, {mod}, high resolution, professional photography"[:480]
     elif mode == "image-image":
-        style_mod = _STYLE_MODIFIERS.get(style, "UGC lifestyle transformation")
-        return f"{base}, {style_mod}, seamless style transfer, preserve subject, professional color grading"[:480]
+        mod = _STYLE_MODIFIERS.get(style, "UGC lifestyle")
+        return f"{base}, {mod}, seamless transfer, professional"[:480]
     elif mode == "text-video":
-        return f"{base}, smooth cinematic motion, authentic UGC video style, natural lighting, engaging scene progression"[:480]
+        return f"{base}, smooth cinematic motion, authentic UGC, natural lighting"[:480]
     elif mode == "image-video":
-        motion_mod = _MOTION_WORDS.get(motion, "smooth natural motion")
-        return f"{base}, {motion_mod}, realistic physics, smooth interpolation, maintain composition"[:480]
-    return f"{base}, high quality, professional, detailed"[:480]
+        m = _MOTION_WORDS.get(motion, "smooth natural motion")
+        return f"{base}, {m}, realistic, smooth interpolation"[:480]
+    return f"{base}, high quality, detailed"[:480]
 
-def generate_image_replicate(prompt, image_data=None):
-    """Generate image using Replicate's FLUX model."""
-    token = get_replicate_token()
-    if not token:
-        return None, "No Replicate API token provided"
-    
-    headers = {
-        "Authorization": f"Token {token}",
-        "Content-Type": "application/json"
-    }
-    
-    if image_data:
-        # Image-to-image
-        payload = {
-            "version": "ac732df83cea7fff18b8472768c88ad041fa750e7a4f6dab96d1c8b26dfd0a7e",  # SDXL
-            "input": {
-                "prompt": prompt,
-                "image": f"data:image/png;base64,{image_data}",
-                "prompt_strength": 0.75,
-                "num_inference_steps": 30,
-                "guidance_scale": 7.5
-            }
-        }
-    else:
-        # Text-to-image (FLUX Schnell - free tier)
-        payload = {
-            "version": "black-forest-labs/flux-schnell",
-            "input": {
-                "prompt": prompt,
-                "num_outputs": 1,
-                "aspect_ratio": "1:1",
-                "output_format": "webp",
-                "output_quality": 90
-            }
-        }
-    
+
+# ════════════════════════════════════════════════════════════════
+#  LOCAL IMAGE GENERATION (Stable Diffusion — runs on YOUR machine)
+# ════════════════════════════════════════════════════════════════
+
+@st.cache_resource(show_spinner=False)
+def load_sd_pipeline():
+    """Load Stable Diffusion locally (one-time ~4GB download, then cached)."""
+    if not HAS_DIFFUSERS:
+        return None, "Install: pip install diffusers transformers torch accelerate"
     try:
-        resp = requests.post("https://api.replicate.com/v1/predictions", 
-                             headers=headers, json=payload, timeout=30)
-        if resp.status_code != 201:
-            return None, f"API Error: {resp.status_code} - {resp.text[:200]}"
-        
-        prediction = resp.json()
-        pred_id = prediction["id"]
-        
-        # Poll for result
-        for _ in range(60):
-            time.sleep(2)
-            poll = requests.get(f"https://api.replicate.com/v1/predictions/{pred_id}",
-                               headers=headers, timeout=10)
-            result = poll.json()
-            
-            if result["status"] == "succeeded":
-                output = result.get("output", [])
-                if isinstance(output, list) and output:
-                    img_url = output[0]
-                elif isinstance(output, str):
-                    img_url = output
-                else:
-                    return None, "No output URL in response"
-                
-                img_resp = requests.get(img_url, timeout=30)
-                return img_resp.content, None
-            elif result["status"] == "failed":
-                return None, f"Generation failed: {result.get('error', 'Unknown error')}"
-        
-        return None, "Timeout: Generation took too long"
+        dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+        pipe = StableDiffusionPipeline.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
+            torch_dtype=dtype,
+            safety_checker=None,
+        )
+        pipe = pipe.to(DEVICE)
+        if DEVICE == "cuda":
+            pipe.enable_attention_slicing()
+        return pipe, None
+    except Exception as e:
+        return None, f"Model load failed: {e}"
+
+@st.cache_resource(show_spinner=False)
+def load_sd_img2img():
+    if not HAS_DIFFUSERS:
+        return None, "diffusers not installed"
+    try:
+        dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+        pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
+            torch_dtype=dtype,
+            safety_checker=None,
+        )
+        pipe = pipe.to(DEVICE)
+        return pipe, None
     except Exception as e:
         return None, str(e)
 
-def generate_video_replicate(prompt, image_data=None):
-    """Generate video using Replicate."""
-    token = get_replicate_token()
-    if not token:
-        return None, "No Replicate API token"
-    
-    headers = {
-        "Authorization": f"Token {token}",
-        "Content-Type": "application/json"
-    }
-    
-    if image_data:
-        # Image to video - Stable Video Diffusion
-        payload = {
-            "version": "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
-            "input": {
-                "input_image": f"data:image/png;base64,{image_data}",
-                "video_length": "25_frames_with_svd_xt",
-                "sizing_strategy": "maintain_aspect_ratio",
-                "frames_per_second": 6,
-                "motion_bucket_id": 127,
-                "cond_aug": 0.02,
-                "decoding_t": 7,
-            }
-        }
-    else:
-        # Text to video - Zeroscope
-        payload = {
-            "version": "9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351",
-            "input": {
-                "prompt": prompt,
-                "num_frames": 24,
-                "num_inference_steps": 50,
-                "fps": 8,
-                "width": 576,
-                "height": 320
-            }
-        }
-    
+def generate_image_local(prompt: str, progress_callback=None):
+    """Generate image entirely locally — no APIs."""
+    pipe, err = load_sd_pipeline()
+    if err: return None, err
     try:
-        resp = requests.post("https://api.replicate.com/v1/predictions",
-                             headers=headers, json=payload, timeout=30)
-        if resp.status_code != 201:
-            return None, f"API Error: {resp.status_code}"
-        
-        pred_id = resp.json()["id"]
-        
-        for _ in range(120):
-            time.sleep(3)
-            poll = requests.get(f"https://api.replicate.com/v1/predictions/{pred_id}",
-                               headers=headers, timeout=10)
-            result = poll.json()
-            
-            if result["status"] == "succeeded":
-                output = result.get("output", [])
-                url = output[0] if isinstance(output, list) else output
-                video_resp = requests.get(url, timeout=60)
-                return video_resp.content, None
-            elif result["status"] == "failed":
-                return None, f"Failed: {result.get('error', 'Unknown')}"
-        
-        return None, "Timeout"
+        steps = 25 if DEVICE == "cuda" else 15
+        result = pipe(prompt, num_inference_steps=steps, guidance_scale=7.5, height=512, width=512)
+        img = result.images[0]
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue(), None
     except Exception as e:
         return None, str(e)
 
-def generate_tts_elevenlabs(script, voice_id, tone, stability=0.5, similarity=0.75):
-    """Generate TTS audio using ElevenLabs."""
-    api_key = get_elevenlabs_key()
-    if not api_key:
-        return None, "No ElevenLabs API key"
-    
-    # Adjust settings based on tone
-    tone_settings = {
-        "Natural": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.0},
-        "Enthusiastic": {"stability": 0.3, "similarity_boost": 0.85, "style": 0.8},
-        "Professional": {"stability": 0.75, "similarity_boost": 0.65, "style": 0.2},
-        "Dramatic": {"stability": 0.35, "similarity_boost": 0.90, "style": 0.9},
-        "Calm": {"stability": 0.85, "similarity_boost": 0.60, "style": 0.1},
-        "Persuasive": {"stability": 0.4, "similarity_boost": 0.80, "style": 0.7},
-    }
-    settings = tone_settings.get(tone, tone_settings["Natural"])
-    
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "xi-api-key": api_key,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "text": script,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": settings["stability"],
-            "similarity_boost": settings["similarity_boost"],
-            "style": settings.get("style", 0.0),
-            "use_speaker_boost": True
-        }
-    }
-    
+def generate_img2img_local(prompt: str, init_image_bytes: bytes, strength: float = 0.7):
+    pipe, err = load_sd_img2img()
+    if err: return None, err
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
-        if resp.status_code == 200:
-            return resp.content, None
-        return None, f"ElevenLabs error: {resp.status_code} - {resp.text[:200]}"
+        init = Image.open(io.BytesIO(init_image_bytes)).convert("RGB").resize((512, 512))
+        steps = 25 if DEVICE == "cuda" else 15
+        result = pipe(prompt=prompt, image=init, strength=strength,
+                      guidance_scale=7.5, num_inference_steps=steps)
+        img = result.images[0]
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue(), None
     except Exception as e:
         return None, str(e)
 
-def generate_script_with_claude(client, description, tone, duration_sec=15):
-    """Generate UGC video script using Claude."""
-    prompt = f"""Write a {duration_sec}-second UGC video script.
-Style: {tone}
-Product/Scene: {description}
 
-Requirements:
-- Sound natural and authentic, NOT like an ad
-- Include action cues in [brackets] sparingly
-- Hook in first 3 seconds
-- Clear, conversational language
-- End with soft CTA or memorable line
-- Script should be speakable in ~{duration_sec} seconds ({duration_sec * 2} words max)
+# ════════════════════════════════════════════════════════════════
+#  LOCAL TTS (pyttsx3 — works fully offline)
+# ════════════════════════════════════════════════════════════════
 
-Return ONLY the spoken script text (no stage directions, no explanations)."""
-    
+def generate_tts_local(text: str, voice_settings: dict, tone: str):
+    """Generate voiceover entirely offline using pyttsx3."""
+    if not HAS_TTS:
+        return None, "Install: pip install pyttsx3"
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=300,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text.strip()
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            out_path = tmp.name
+        engine = pyttsx3.init()
+        rate = int(voice_settings["rate"] * TONE_RATE_MOD.get(tone, 1.0))
+        engine.setProperty('rate', rate)
+        engine.setProperty('volume', 1.0)
+        voices = engine.getProperty('voices')
+        if voices and voice_settings["voice_idx"] < len(voices):
+            engine.setProperty('voice', voices[voice_settings["voice_idx"]].id)
+        engine.save_to_file(text, out_path)
+        engine.runAndWait()
+        with open(out_path, "rb") as f:
+            audio = f.read()
+        try: os.remove(out_path)
+        except: pass
+        return audio, None
     except Exception as e:
-        return f"Script generation failed: {e}"
+        return None, str(e)
 
-# ── Main Render ───────────────────────────────────────────────────────────────
 
-def render():
-    st.markdown("""
-    <style>
-    @keyframes shimmer {
-      0% { background-position: -200% center; }
-      100% { background-position: 200% center; }
-    }
-    @keyframes pop-in {
-      0% { transform: scale(0.9); opacity: 0; }
-      100% { transform: scale(1); opacity: 1; }
-    }
-    @keyframes glow-pulse {
-      0%, 100% { box-shadow: 0 0 20px rgba(0,245,212,0.2); }
-      50% { box-shadow: 0 0 40px rgba(0,245,212,0.5), 0 0 80px rgba(123,97,255,0.3); }
-    }
-    .studio-card {
-      animation: pop-in 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-      background: rgba(13,17,23,0.8);
-      border: 1px solid rgba(0,245,212,0.15);
-      border-radius: 20px;
-      padding: 1.5rem;
-      backdrop-filter: blur(20px);
-      transition: all 0.3s ease;
-    }
-    .studio-card:hover {
-      border-color: rgba(0,245,212,0.35);
-      box-shadow: 0 8px 40px rgba(0,245,212,0.1);
-      transform: translateY(-2px);
-    }
-    .mode-badge {
-      display: inline-block;
-      background: linear-gradient(135deg, rgba(0,245,212,0.15), rgba(123,97,255,0.15));
-      border: 1px solid rgba(0,245,212,0.3);
-      border-radius: 100px;
-      padding: 0.4rem 1rem;
-      font-family: 'Syne', sans-serif;
-      font-size: 0.75rem;
-      font-weight: 700;
-      color: #00f5d4;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-    }
-    .output-frame {
-      animation: glow-pulse 3s ease-in-out infinite;
-      border-radius: 16px;
-      overflow: hidden;
-    }
-    .voice-pill {
-      background: rgba(123,97,255,0.1);
-      border: 1px solid rgba(123,97,255,0.25);
-      border-radius: 100px;
-      padding: 0.3rem 0.8rem;
-      font-size: 0.8rem;
-      color: #7b61ff;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .shimmer-text {
-      background: linear-gradient(90deg, #00f5d4, #7b61ff, #ff6b6b, #00f5d4);
-      background-size: 200% auto;
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      animation: shimmer 3s linear infinite;
-    }
-    .progress-bar {
-      height: 3px;
-      border-radius: 3px;
-      background: linear-gradient(90deg, #00f5d4, #7b61ff);
-      animation: shimmer 1.5s linear infinite;
-      background-size: 200% auto;
-    }
-    </style>
-    
-    <div style="text-align:center;padding:2rem 0 1.5rem;">
-      <div style="display:inline-block;background:rgba(123,97,255,0.1);
-                  border:1px solid rgba(123,97,255,0.25);border-radius:100px;
-                  padding:0.3rem 1rem;font-size:0.75rem;color:#7b61ff;
-                  letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;">
-        🎬 UGC Level Content Creation
-      </div>
-      <h1 style="font-family:'Syne',sans-serif;font-size:clamp(1.8rem,4vw,3rem);
-                 font-weight:800;line-height:1.1;margin-bottom:0.75rem;">
-        <span class="shimmer-text">Creator Studio</span>
-      </h1>
-      <p style="color:#6b7280;font-size:1rem;max-width:500px;margin:0 auto;">
-        Generate viral UGC content — images, videos & voiceovers — all AI-powered
-      </p>
-    </div>
-    """, unsafe_allow_html=True)
+# ════════════════════════════════════════════════════════════════
+#  LOCAL SCRIPT GENERATION (template-based, no AI API)
+# ════════════════════════════════════════════════════════════════
 
-    # ── Mode Tabs ─────────────────────────────────────────────────────────────
-    tabs = st.tabs(["🖼️ Text → Image", "🔄 Image → Image", "🎬 Text → Video", "📽️ Image → Video"])
+SCRIPT_TEMPLATES = {
+    "Natural": [
+        "Okay so I just tried {topic} and honestly? I had no idea it would be this good. {detail} If you've been on the fence, this is your sign.",
+        "Real talk — {topic}. I was skeptical at first, but {detail}. Now I'm telling everyone.",
+    ],
+    "Enthusiastic": [
+        "STOP scrolling! You NEED to see {topic}! {detail} I am OBSESSED. Run, don't walk!",
+        "Guys! {topic} just changed EVERYTHING for me! {detail} You have to try this!",
+    ],
+    "Professional": [
+        "Today we're examining {topic}. {detail} Let's break down why this matters.",
+        "Introducing {topic} — a thoughtful approach to elevated everyday living. {detail}",
+    ],
+    "Dramatic": [
+        "They said it couldn't be done. Then came {topic}. {detail} Everything changed.",
+        "In a world full of options... {topic} stands apart. {detail} This is the moment.",
+    ],
+    "Calm": [
+        "Take a breath. Let me tell you about {topic}. {detail} It's that simple.",
+        "Sometimes the best things are the quietest. {topic}. {detail}",
+    ],
+    "Persuasive": [
+        "Here's the truth about {topic}: {detail} If you're not using this yet, you're behind. Start today.",
+        "Why settle? {topic} is the upgrade you've been waiting for. {detail} Don't wait.",
+    ],
+}
 
-        # ── Tab 1: Text to Image ──────────────────────────────────────────────────
-    with tabs[0]:
-        st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">✨ Text → Image</span>', unsafe_allow_html=True)
-        st.markdown("""
-        <p style="color:#9ca3af;font-size:0.9rem;margin:0.75rem 0;">
-        Describe your UGC scene and AI will craft a production-ready image.
-        </p>
-        """, unsafe_allow_html=True)
-        
-        t2i_prompt = st.text_area(
-            "Scene Description",
-            placeholder="e.g. A confident young woman holding a sleek skincare bottle, golden hour lighting, lifestyle aesthetic, soft bokeh background, authentic UGC feel...",
-            height=120,
-            key="t2i_prompt",
-            label_visibility="collapsed"
-        )
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            t2i_enhance = st.toggle("✨ AI Enhance Prompt", value=True, key="t2i_enhance")
-        with col2:
-            t2i_style = st.selectbox("Style", 
-                ["Lifestyle / Authentic", "Product Showcase", "Before/After", 
-                 "Cinematic", "Social Media Native", "Minimalist"],
-                key="t2i_style", label_visibility="collapsed")
-        
-        if st.button("🎨 Generate Image", key="t2i_gen", use_container_width=True):
-            if not t2i_prompt.strip():
-                st.warning("Please enter a description.")
-            elif not get_replicate_token():
-                st.error("🔑 Add your Replicate API token in the sidebar to generate images.")
-            else:
-                with st.status("🎨 Creating your UGC image...", expanded=True) as status:
-                    st.write("🧠 Analyzing your vision...")
-                    
-                    final_prompt = t2i_prompt.strip()
-                    if t2i_enhance and client:
-                        st.write("✨ Enhancing prompt with AI...")
-                        final_prompt = enhance_prompt_locally(f"[Style: {t2i_style}] {final_prompt}", "text-image")
-                        st.write(f"📝 Enhanced: *{final_prompt[:100]}...*" if len(final_prompt) > 100 else f"📝 Enhanced: *{final_prompt}*")
-                    
-                    st.write("🖼️ Generating image...")
-                    st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
-                    
-                    img_data, err = generate_image_replicate(final_prompt)
-                    
-                    if err:
-                        status.update(label="❌ Generation failed", state="error")
-                        st.error(f"Error: {err}")
-                    else:
-                        status.update(label="✅ Image ready!", state="complete")
-                        st.markdown('<div class="output-frame">', unsafe_allow_html=True)
-                        st.image(img_data, use_container_width=True)
-                        st.markdown('</div>', unsafe_allow_html=True)
-                        st.download_button("⬇️ Download Image", img_data, 
-                                          "ugc_image.webp", "image/webp",
-                                          use_container_width=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+def generate_script_local(description: str, tone: str, duration_sec: int) -> str:
+    import random
+    templates = SCRIPT_TEMPLATES.get(tone, SCRIPT_TEMPLATES["Natural"])
+    seed = int(hashlib.md5(f"{description}{tone}{duration_sec}".encode()).hexdigest()[:8], 16)
+    random.seed(seed)
+    template = random.choice(templates)
+    parts = description.split('.')
+    topic = parts[0].strip()[:80] if parts else description[:80]
+    detail = parts[1].strip()[:120] if len(parts) > 1 else "It really lives up to the hype."
+    script = template.format(topic=topic, detail=detail)
+    target_words = duration_sec * 2  # ~2 words/sec
+    words = script.split()
+    if len(words) > target_words:
+        script = " ".join(words[:target_words])
+    return script
 
-    # ── Tab 2: Image to Image ─────────────────────────────────────────────────
-    with tabs[1]:
-        st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">🔄 Image → Image</span>', unsafe_allow_html=True)
-        
-        i2i_upload = st.file_uploader("Upload source image", 
-                                       type=["png","jpg","jpeg","webp"],
-                                       key="i2i_upload",
-                                       label_visibility="collapsed")
-        
-        if i2i_upload:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Original**")
-                st.image(i2i_upload, use_container_width=True)
-        
-        i2i_prompt = st.text_area(
-            "Transformation Description",
-            placeholder="e.g. Transform to golden hour lifestyle aesthetic, warm tones, authentic UGC style, slight film grain...",
-            height=100,
-            key="i2i_prompt",
-            label_visibility="collapsed"
-        )
-        
-        i2i_strength = st.slider("Transformation Strength", 0.3, 0.95, 0.7, 0.05,
-                                  help="Higher = more transformation, lower = closer to original")
-        
-        if st.button("🔄 Transform Image", key="i2i_gen", use_container_width=True):
-            if not i2i_upload:
-                st.warning("Please upload an image.")
-            elif not i2i_prompt.strip():
-                st.warning("Please enter a transformation description.")
-            elif not get_replicate_token():
-                st.error("🔑 Add your Replicate API token in the sidebar.")
-            else:
-                with st.status("🔄 Transforming your image...", expanded=True) as status:
-                    img_b64 = base64.b64encode(i2i_upload.read()).decode()
-                    
-                    final_prompt = i2i_prompt.strip()
-                    if True:
-                        final_prompt = enhance_prompt_locally(final_prompt, "image-image")
-                    
-                    img_data, err = generate_image_replicate(final_prompt, img_b64)
-                    
-                    if err:
-                        status.update(label="❌ Failed", state="error")
-                        st.error(f"Error: {err}")
-                    else:
-                        status.update(label="✅ Transformed!", state="complete")
-                        with col2:
-                            st.markdown("**Transformed**")
-                            st.markdown('<div class="output-frame">', unsafe_allow_html=True)
-                            st.image(img_data, use_container_width=True)
-                            st.markdown('</div>', unsafe_allow_html=True)
-                        st.download_button("⬇️ Download", img_data, "transformed.webp", "image/webp",
-                                          use_container_width=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Tab 3: Text to Video ──────────────────────────────────────────────────
-    with tabs[2]:
-        st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">🎬 Text → Video</span>', unsafe_allow_html=True)
-        
-        t2v_prompt = st.text_area(
-            "Scene Description",
-            placeholder="e.g. A woman discovering an amazing skincare product, close-up reaction, holding product up, natural lighting, authentic and relatable...",
-            height=100,
-            key="t2v_prompt",
-            label_visibility="collapsed"
-        )
-        
-        st.markdown("---")
-        st.markdown("### 🎙️ Voiceover Script")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            use_script = st.toggle("Add Voiceover", value=True, key="t2v_use_script")
-        with col2:
-            if use_script:
-                auto_script = st.toggle("✨ AI Generate Script", value=True, key="t2v_auto_script")
-        
-        if use_script:
-            script_duration = st.slider("Script Duration (seconds)", 10, 60, 15, 5, key="t2v_dur")
-            
-            if 'auto_script' in st.session_state and st.session_state.t2v_auto_script:
-                if st.button("📝 Generate Script", key="gen_script"):
-                    if t2v_prompt:
-                        with st.spinner("Writing your script..."):
-                            tone_for_script = st.session_state.get("t2v_tone", "Natural")
-                            script = generate_script_with_claude(client, t2v_prompt, 
-                                                                 tone_for_script, script_duration)
-                            st.session_state.generated_script = script
-            
-            t2v_script = st.text_area(
-                "Voiceover Script",
-                value=st.session_state.get("generated_script", ""),
-                placeholder="What the narrator or character says in the video...",
-                height=120,
-                key="t2v_script"
-            )
-            
-            st.markdown("### 🎭 Voice Agent")
-            v_col1, v_col2, v_col3 = st.columns(3)
-            
-            with v_col1:
-                gender = st.selectbox("Gender", ["Male", "Female"], key="t2v_gender")
-            with v_col2:
-                voices = list(VOICE_AGENTS[gender].keys())
-                selected_voice = st.selectbox("Voice", voices, key="t2v_voice")
-            with v_col3:
-                tone = st.selectbox("Tone", list(TONE_DESCRIPTIONS.keys()), key="t2v_tone")
-            
-            st.markdown(f"""
-            <div style="background:rgba(123,97,255,0.08);border:1px solid rgba(123,97,255,0.2);
-                        border-radius:12px;padding:0.75rem;font-size:0.8rem;color:#9ca3af;margin:0.5rem 0;">
-              🎙️ <strong style="color:#7b61ff;">{selected_voice}</strong> · {TONE_DESCRIPTIONS.get(tone, '')}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Preview audio
-            if st.button("▶️ Preview Voice", key="preview_voice"):
-                preview_text = t2v_script[:100] if t2v_script else "This is a preview of your selected voice agent."
-                if not get_elevenlabs_key():
-                    st.error("🔑 Add ElevenLabs API key in sidebar for voice preview.")
-                else:
-                    with st.spinner("Generating voice preview..."):
-                        voice_id = VOICE_AGENTS[gender][selected_voice]
-                        audio, err = generate_tts_elevenlabs(preview_text, voice_id, tone)
-                        if audio:
-                            st.audio(audio, format="audio/mp3")
-                        else:
-                            st.error(f"Voice preview failed: {err}")
-        
-        st.markdown("---")
-        
-        if st.button("🎬 Generate Video + Audio", key="t2v_gen", use_container_width=True):
-            if not t2v_prompt.strip():
-                st.warning("Please enter a scene description.")
-            elif not get_replicate_token():
-                st.error("🔑 Add Replicate API token in sidebar.")
-            else:
-                with st.status("🎬 Creating your UGC video...", expanded=True) as status:
-                    final_prompt = t2v_prompt.strip()
-                    if True:
-                        st.write("✨ Enhancing prompt...")
-                        final_prompt = enhance_prompt_locally(final_prompt, "text-video")
-                    
-                    # Generate video
-                    st.write("🎬 Generating video (this takes 2-3 minutes)...")
-                    video_data, v_err = generate_video_replicate(final_prompt)
-                    
-                    # Generate audio if requested
-                    audio_data = None
-                    if use_script and t2v_script.strip() and get_elevenlabs_key():
-                        st.write("🎙️ Generating voiceover...")
-                        voice_id = VOICE_AGENTS[gender][selected_voice]
-                        audio_data, a_err = generate_tts_elevenlabs(t2v_script, voice_id, tone)
-                    
-                    if v_err and not video_data:
-                        status.update(label="❌ Video generation failed", state="error")
-                        st.error(f"Video error: {v_err}")
-                    else:
-                        status.update(label="✅ Content ready!", state="complete")
-                        
-                        if video_data:
-                            st.video(video_data)
-                            st.download_button("⬇️ Download Video", video_data, 
-                                              "ugc_video.mp4", "video/mp4",
-                                              use_container_width=True)
-                        
-                        if audio_data:
-                            st.markdown("**🎙️ Voiceover Audio:**")
-                            st.audio(audio_data, format="audio/mp3")
-                            st.download_button("⬇️ Download Audio", audio_data,
-                                              "voiceover.mp3", "audio/mp3",
-                                              use_container_width=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+# ════════════════════════════════════════════════════════════════
+#  MOTION TRANSFER (UGC core — character does YOUR moves)
+# ════════════════════════════════════════════════════════════════
 
-    # ── Tab 4: Image to Video ─────────────────────────────────────────────────
-    with tabs[3]:
-        st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">📽️ Image → Video</span>', unsafe_allow_html=True)
-        
-        i2v_upload = st.file_uploader("Upload image to animate",
-                                       type=["png","jpg","jpeg","webp"],
-                                       key="i2v_upload",
-                                       label_visibility="collapsed")
-        
-        if i2v_upload:
-            st.image(i2v_upload, use_container_width=True)
-        
-        i2v_prompt = st.text_area(
-            "Animation Direction",
-            placeholder="e.g. Subtle camera zoom in, product rotates slowly, steam rising, hair blowing gently in breeze...",
-            height=100,
-            key="i2v_prompt",
-            label_visibility="collapsed"
-        )
-        
-        st.markdown("---")
-        st.markdown("### 🎙️ Add Voiceover")
-        
-        i2v_use_voice = st.toggle("Add Voiceover Script", value=False, key="i2v_use_voice")
-        
-        if i2v_use_voice:
-            i2v_script = st.text_area("Script", 
-                                       placeholder="What should the narrator say?",
-                                       height=80, key="i2v_script")
-            
-            v_col1, v_col2, v_col3 = st.columns(3)
-            with v_col1:
-                i2v_gender = st.selectbox("Gender", ["Male", "Female"], key="i2v_gender")
-            with v_col2:
-                i2v_voice = st.selectbox("Voice", list(VOICE_AGENTS[i2v_gender].keys()), key="i2v_voice")
-            with v_col3:
-                i2v_tone = st.selectbox("Tone", list(TONE_DESCRIPTIONS.keys()), key="i2v_tone")
-        
-        motion = st.select_slider("Motion Intensity", 
-                                   ["Subtle", "Gentle", "Moderate", "Dynamic", "Intense"],
-                                   value="Moderate", key="i2v_motion")
-        
-        if st.button("📽️ Animate Image", key="i2v_gen", use_container_width=True):
-            if not i2v_upload:
-                st.warning("Please upload an image to animate.")
-            elif not get_replicate_token():
-                st.error("🔑 Add Replicate API token in sidebar.")
-            else:
-                with st.status("📽️ Animating your image...", expanded=True) as status:
-                    img_b64 = base64.b64encode(i2v_upload.read()).decode()
-                    
-                    prompt = i2v_prompt.strip() or f"{motion.lower()} motion, cinematic, smooth"
-                    video_data, v_err = generate_video_replicate(prompt, img_b64)
-                    
-                    audio_data = None
-                    if i2v_use_voice and i2v_script.strip() and get_elevenlabs_key():
-                        st.write("🎙️ Generating voiceover...")
-                        voice_id = VOICE_AGENTS[i2v_gender][i2v_voice]
-                        audio_data, _ = generate_tts_elevenlabs(i2v_script, voice_id, i2v_tone)
-                    
-                    if v_err and not video_data:
-                        status.update(label="❌ Failed", state="error")
-                        st.error(f"Error: {v_err}")
-                    else:
-                        status.update(label="✅ Animated!", state="complete")
-                        if video_data:
-                            st.video(video_data)
-                            st.download_button("⬇️ Download Video", video_data,
-                                              "animated.mp4", "video/mp4",
-                                              use_container_width=True)
-                        if audio_data:
-                            st.audio(audio_data, format="audio/mp3")
-                            st.download_button("⬇️ Download Audio", audio_data,
-                                              "voiceover.mp3", "audio/mp3",
-                                              use_container_width=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # ── Sidebar API Keys ──────────────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### 🔑 API Keys")
-        
-        with st.expander("Configure API Keys", expanded=not get_replicate_token()):
-            st.markdown("""
-            <div style="font-size:0.8rem;color:#6b7280;margin-bottom:0.75rem;">
-            All keys are session-only and never stored permanently.
-            </div>
-            """, unsafe_allow_html=True)
-            
-            rep_key = st.text_input("Replicate (images & videos)", type="password",
-                                     placeholder="r8_...",
-                                     value=st.session_state.get("replicate_key", ""),
-                                     key="ugc_rep_key")
-            if rep_key: st.session_state.replicate_key = rep_key
-            
-            el_key = st.text_input("ElevenLabs (voiceovers)", type="password",
-                                    placeholder="sk_...",
-                                    value=st.session_state.get("elevenlabs_key", ""),
-                                    key="ugc_el_key")
-            if el_key: st.session_state.elevenlabs_key = el_key
-            
-            st.markdown("""
-            <div style="font-size:0.75rem;color:#6b7280;margin-top:0.75rem;">
-              🆓 Free tiers available:<br>
-              • <a href="https://replicate.com" target="_blank" style="color:#00f5d4;">replicate.com</a><br>
-              • <a href="https://elevenlabs.io" target="_blank" style="color:#00f5d4;">elevenlabs.io</a><br>
-              • <a href="https://replicate.com" target="_blank" style="color:#00f5d4;">replicate.com</a>
-            </div>
-            """, unsafe_allow_html=True)
+def extract_pose_keypoints(video_bytes: bytes):
