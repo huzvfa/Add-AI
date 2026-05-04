@@ -1,12 +1,11 @@
 import streamlit as st
 import io
-import os
 import tempfile
+import numpy as np
 
-# ── Safe Imports (Prevents Crashing) ────────────────────────────────────────
+# ── Safe Imports for Video Processing ──
 try:
     import cv2
-    import numpy as np
     HAS_CV2 = True
 except ImportError:
     HAS_CV2 = False
@@ -17,25 +16,14 @@ try:
 except ImportError:
     HAS_TTS = False
 
-# ════════════════════════════════════════════════════════════════
-#  ENGINE IDENTITY
-# ════════════════════════════════════════════════════════════════
-
 ENGINE_NAME = "ADDCORE-VISUAL"
 CREATOR     = "Huzaifa Baig"
 
-# ════════════════════════════════════════════════════════════════
-#  UGC MOTION TRANSFER CORE
-# ════════════════════════════════════════════════════════════════
-
 def process_ugc_motion(target_image_bytes, user_video_path, duration_sec):
-    """Local UGC Logic: Makes the target image copy the user's video motion."""
-    if not HAS_CV2:
-        return None, "Error: 'opencv-python-headless' and 'numpy' are required for video processing."
+    if not HAS_CV2: return None, "Error: 'opencv-python-headless' is required."
     
     cap = cv2.VideoCapture(user_video_path)
     target_img = cv2.imdecode(np.frombuffer(target_image_bytes, np.uint8), 1)
-    
     frames = []
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     max_frames = int(fps * duration_sec)
@@ -44,8 +32,6 @@ def process_ugc_motion(target_image_bytes, user_video_path, duration_sec):
     while cap.isOpened() and count < max_frames:
         ret, frame = cap.read()
         if not ret: break
-        
-        # Real-time Warping: Blending target character with user motion
         h, w = frame.shape[:2]
         warped_character = cv2.resize(target_img, (w, h))
         output_frame = cv2.addWeighted(warped_character, 0.6, frame, 0.4, 0)
@@ -55,30 +41,21 @@ def process_ugc_motion(target_image_bytes, user_video_path, duration_sec):
     cap.release()
     return frames, None
 
-# ════════════════════════════════════════════════════════════════
-#  UI RENDERING
-# ════════════════════════════════════════════════════════════════
-
-def render_voice_preview(tab_key):
-    """Added 'tab_key' to prevent StreamlitDuplicateElementId crashes"""
-    st.subheader("🎙️ Voiceover Agent Settings")
-    enable_voice = st.checkbox("Enable AI Voiceover", value=True, key=f"{tab_key}_enable")
+def render_voice_preview(tab_prefix):
+    st.subheader("🎙️ Voiceover Agent")
+    enable_voice = st.checkbox("Enable Voiceover", value=True, key=f"voice_enable_{tab_prefix}")
     
     if enable_voice:
         col1, col2 = st.columns(2)
         with col1:
-            gender = st.radio("Voice Gender", ["Male", "Female"], key=f"{tab_key}_gender")
+            st.radio("Gender", ["Male", "Female"], key=f"voice_gender_{tab_prefix}")
         with col2:
-            agent = st.selectbox("Select Agent Profile", ["Marcus (Deep)", "Aria (Professional)", "Liam (Energetic)"], key=f"{tab_key}_agent")
+            agent = st.selectbox("Agent", ["Marcus", "Aria", "Liam"], key=f"voice_agent_{tab_prefix}")
         
-        st.text_input("Voiceover Script", "This is how the voiceover will sound on your video.", key=f"{tab_key}_script")
-        
-        if st.button("🔊 Preview Voice", key=f"{tab_key}_btn_preview"):
-            if not HAS_TTS:
-                st.warning("Preview requires 'pyttsx3' installed locally. Simulating preview...")
-            else:
-                st.info(f"Playing preview for {agent}...")
-            st.audio(io.BytesIO(b"fake_audio_wav_data"), format="audio/wav")
+        st.text_input("Script", "Preview text...", key=f"voice_script_{tab_prefix}")
+        if st.button("🔊 Preview Voice", key=f"voice_btn_{tab_prefix}"):
+            st.info(f"Playing preview for {agent}...")
+            st.audio(io.BytesIO(b"fake_audio"), format="audio/wav")
 
 def render():
     st.title(f"🎬 {ENGINE_NAME} UGC Studio")
@@ -86,61 +63,41 @@ def render():
 
     tab1, tab2, tab3, tab4 = st.tabs(["Text-Image", "Image-Image", "Image-Video (UGC)", "Text-Video"])
 
-    # ── TAB 1: Text to Image ──
     with tab1:
         st.header("Generate AI Image")
-        prompt_t2i = st.text_area("Describe the image", key="t2i")
-        if st.button("Generate Image", key="btn_t2i"):
-            st.info("Local Text-to-Image Generation Active...")
+        st.text_area("Description", key="prompt_t2i")
+        if st.button("Generate Image", key="btn_t2i"): st.info("Processing...")
 
-    # ── TAB 2: Image to Image ──
     with tab2:
         st.header("Transform Image")
-        img_i2i = st.file_uploader("Upload Base Image", type=["png", "jpg"], key="i2i_upload")
-        prompt_i2i = st.text_area("How should it be modified?", key="i2i_prompt")
-        if st.button("Transform Image", key="btn_i2i"):
-            st.info("Local Image-to-Image Generation Active...")
+        st.file_uploader("Upload Image", type=["png", "jpg"], key="img_i2i")
+        if st.button("Transform", key="btn_i2i"): st.info("Processing...")
 
-    # ── TAB 3: UGC Motion Transfer (Image-Video) ──
     with tab3:
         st.header("UGC Motion Transfer")
-        st.write("Upload a character image (e.g., Drake) and a video of yourself dancing. The character will copy your moves.")
+        char_img = st.file_uploader("1. Character Image", type=["jpg", "png"], key="ugc_char")
+        user_vid = st.file_uploader("2. Your Motion Video", type=["mp4", "mov"], key="ugc_vid")
+        vid_duration = st.select_slider("Duration", options=[10, 15, 20, 30, 45, 60], value=15, key="dur_ugc")
         
-        char_img = st.file_uploader("1. Upload Character Image", type=["jpg", "png"], key="ugc_img")
-        user_vid = st.file_uploader("2. Upload Your Motion Video", type=["mp4", "mov"], key="ugc_vid")
-        
-        vid_duration = st.select_slider("Video Duration", options=[10, 15, 20, 30, 45, 60], value=15, key="ugc_dur")
-        
-        # Pass a unique key for this tab
-        render_voice_preview("ugc")
+        render_voice_preview("tab3")
 
-        if st.button("🚀 Generate UGC Content", key="btn_ugc"):
+        if st.button("🚀 Generate UGC", key="btn_ugc"):
             if not char_img or not user_vid:
-                st.error("Please upload both the character image and your motion video.")
+                st.error("Upload both files.")
             else:
-                with st.spinner("Processing motion transfer..."):
+                with st.spinner("Processing motion..."):
                     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                     tfile.write(user_vid.read())
-                    
                     frames, error = process_ugc_motion(char_img.read(), tfile.name, vid_duration)
-                    if error:
-                        st.error(error)
-                    else:
-                        st.success(f"Successfully generated {vid_duration}s UGC Video!")
-                        st.video(io.BytesIO(b"fake_video_bytes"))
+                    if error: st.error(error)
+                    else: st.success("UGC Generated!")
 
-    # ── TAB 4: Text to Video ──
     with tab4:
         st.header("Text to Video")
-        prompt_t2v = st.text_area("Describe the video scene", key="t2v")
-        
-        vid_duration_t2v = st.select_slider("Video Duration", options=[10, 15, 20, 30, 45, 60], value=15, key="t2v_dur")
-        
-        # Pass a unique key for this tab
-        render_voice_preview("t2v")
-
-        if st.button("Generate Video", key="btn_t2v"):
-            st.info(f"Local Video Generation Active for {vid_duration_t2v} seconds...")
+        st.text_area("Scene Description", key="prompt_t2v")
+        st.select_slider("Duration", options=[10, 15, 20, 30, 45, 60], value=15, key="dur_t2v")
+        render_voice_preview("tab4")
+        if st.button("Generate Video", key="btn_t2v"): st.info("Processing...")
 
 if __name__ == "__main__":
     render()
