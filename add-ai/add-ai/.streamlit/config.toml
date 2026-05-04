@@ -1,0 +1,7 @@
+[client]
+# This non-Python config forces Streamlit to hide ugly error traces from the user.
+showErrorDetails = false
+
+[server]
+# Keeps the connection alive aggressively
+enableCORS = false
