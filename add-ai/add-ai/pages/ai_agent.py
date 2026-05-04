@@ -1,12 +1,11 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import io
-import time
+import os
 import requests
 from urllib.parse import quote
 from dotenv import load_dotenv
 
-# Safe File Extraction Libraries
+# File Extraction Libraries (Safely imported)
 try:
     from pypdf import PdfReader
     HAS_PDF = True
@@ -43,10 +42,11 @@ If no files are provided, act as a comprehensive, highly intelligent assistant o
 NEVER truncate your answers. Provide exhaustive, detailed, and clear explanations."""
 
 # ════════════════════════════════════════════════════════════════
-#  REAL-TIME FILE EXTRACTION
+#  FILE EXTRACTION (REAL-TIME)
 # ════════════════════════════════════════════════════════════════
 
 def extract_text(uploaded_file) -> str:
+    """Extracts raw text from files in real-time."""
     name = uploaded_file.name
     ext  = name.rsplit(".", 1)[-1].lower()
     raw  = uploaded_file.read()
@@ -71,29 +71,34 @@ def extract_text(uploaded_file) -> str:
     return f"\n--- START OF FILE: {name} ---\n{result}\n--- END OF FILE ---\n"
 
 # ════════════════════════════════════════════════════════════════
-#  KEYLESS ENGINE (FAIL-SAFE & FAST)
+#  KEYLESS INTELLIGENCE ENGINE (BULLETPROOF & PAYLOAD CAPPED)
 # ════════════════════════════════════════════════════════════════
 
 def call_add_ai_engine(messages):
-    """Reliable, zero-key LLM routing. Ensures a response is always returned."""
-    payload = {"messages": messages, "model": "mistral-nemo", "jsonMode": False}
+    """Hits a free, keyless LLM proxy. Hard-capped timeout ensures no 60-second hanging."""
+    payload = {"messages": messages, "model": "mistral", "jsonMode": False}
     
+    # Primary API (Fast POST Request)
     try:
-        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=15)
+        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=8)
         if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"].strip()
+            result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            if result:
+                return result
     except:
         pass
 
+    # Secondary API Fallback (POST to avoid URL length limits)
     try:
-        last_msg = messages[-1]["content"]
-        sys_msg = messages[0]["content"]
-        url = f"https://text.pollinations.ai/prompt/{quote(last_msg)}?system={quote(sys_msg)}"
-        resp = requests.get(url, timeout=15)
+        resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=8)
         if resp.status_code == 200:
-            return resp.text.strip()
+            result = resp.text.strip()
+            if result:
+                return result
     except:
-        return "⚡ The Core is re-aligning parameters. Please click 'Send' again."
+        pass
+        
+    return "⚠️ The network dropped the connection. Please click Send again."
 
 # ════════════════════════════════════════════════════════════════
 #  STREAMLIT UI
@@ -186,16 +191,20 @@ def render():
         </div>
         """, unsafe_allow_html=True)
         
-        time.sleep(2) # Enforce exactly 2 seconds of animation
-        
-        # Real-time extraction & logic
+        # Real-time extraction & payload logic
         file_data = "".join([extract_text(f) for f in uploaded_files]) if uploaded_files else ""
+        
+        # CRITICAL FIX: Limit payload size to prevent server crash/timeout
+        if len(file_data) > 6000:
+            file_data = file_data[:6000] + "\n...[Content Truncated to prevent memory overload]..."
+            
         prompt_context = SYSTEM_PROMPT
         if file_data:
             prompt_context += f"\n\nUSER UPLOADED SOURCE MATERIAL. YOU MUST ANALYZE THIS TO ANSWER:\n{file_data}"
         
         api_msgs = [{"role": "system", "content": prompt_context}]
-        for msg in st.session_state.chat_messages:
+        # Only send the last few messages to save bandwidth
+        for msg in st.session_state.chat_messages[-5:]:
             api_msgs.append({"role": msg["role"], "content": msg["content"]})
         
         response = call_add_ai_engine(api_msgs)
