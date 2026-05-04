@@ -59,25 +59,25 @@ def process_ugc_motion(target_image_bytes, user_video_path, duration_sec):
 #  UI RENDERING
 # ════════════════════════════════════════════════════════════════
 
-def render_voice_preview():
+def render_voice_preview(tab_key):
+    """Added 'tab_key' to prevent StreamlitDuplicateElementId crashes"""
     st.subheader("🎙️ Voiceover Agent Settings")
-    enable_voice = st.checkbox("Enable AI Voiceover", value=True)
+    enable_voice = st.checkbox("Enable AI Voiceover", value=True, key=f"{tab_key}_enable")
     
     if enable_voice:
         col1, col2 = st.columns(2)
         with col1:
-            gender = st.radio("Voice Gender", ["Male", "Female"])
+            gender = st.radio("Voice Gender", ["Male", "Female"], key=f"{tab_key}_gender")
         with col2:
-            agent = st.selectbox("Select Agent Profile", ["Marcus (Deep)", "Aria (Professional)", "Liam (Energetic)"])
+            agent = st.selectbox("Select Agent Profile", ["Marcus (Deep)", "Aria (Professional)", "Liam (Energetic)"], key=f"{tab_key}_agent")
         
-        st.text_input("Voiceover Script", "This is how the voiceover will sound on your video.", key="vo_script")
+        st.text_input("Voiceover Script", "This is how the voiceover will sound on your video.", key=f"{tab_key}_script")
         
-        if st.button("🔊 Preview Voice"):
+        if st.button("🔊 Preview Voice", key=f"{tab_key}_btn_preview"):
             if not HAS_TTS:
                 st.warning("Preview requires 'pyttsx3' installed locally. Simulating preview...")
             else:
                 st.info(f"Playing preview for {agent}...")
-            # Simulated audio preview element
             st.audio(io.BytesIO(b"fake_audio_wav_data"), format="audio/wav")
 
 def render():
@@ -90,15 +90,15 @@ def render():
     with tab1:
         st.header("Generate AI Image")
         prompt_t2i = st.text_area("Describe the image", key="t2i")
-        if st.button("Generate Image"):
+        if st.button("Generate Image", key="btn_t2i"):
             st.info("Local Text-to-Image Generation Active...")
 
     # ── TAB 2: Image to Image ──
     with tab2:
         st.header("Transform Image")
         img_i2i = st.file_uploader("Upload Base Image", type=["png", "jpg"], key="i2i_upload")
-        prompt_i2i = st.text_area("How should it be modified?", key="i2i")
-        if st.button("Transform Image"):
+        prompt_i2i = st.text_area("How should it be modified?", key="i2i_prompt")
+        if st.button("Transform Image", key="btn_i2i"):
             st.info("Local Image-to-Image Generation Active...")
 
     # ── TAB 3: UGC Motion Transfer (Image-Video) ──
@@ -111,9 +111,10 @@ def render():
         
         vid_duration = st.select_slider("Video Duration", options=[10, 15, 20, 30, 45, 60], value=15, key="ugc_dur")
         
-        render_voice_preview()
+        # Pass a unique key for this tab
+        render_voice_preview("ugc")
 
-        if st.button("🚀 Generate UGC Content"):
+        if st.button("🚀 Generate UGC Content", key="btn_ugc"):
             if not char_img or not user_vid:
                 st.error("Please upload both the character image and your motion video.")
             else:
@@ -135,9 +136,10 @@ def render():
         
         vid_duration_t2v = st.select_slider("Video Duration", options=[10, 15, 20, 30, 45, 60], value=15, key="t2v_dur")
         
-        render_voice_preview()
+        # Pass a unique key for this tab
+        render_voice_preview("t2v")
 
-        if st.button("Generate Video"):
+        if st.button("Generate Video", key="btn_t2v"):
             st.info(f"Local Video Generation Active for {vid_duration_t2v} seconds...")
 
 if __name__ == "__main__":
