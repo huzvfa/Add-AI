@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import io
 import os
 import requests
@@ -183,6 +184,7 @@ def render():
         st.session_state.chat_messages.append({"role": "user", "content": user_query})
         
         # 2-Second Logo Animation
+        import time
         anim_placeholder = st.empty()
         anim_placeholder.markdown(f"""
         <div style="text-align:center; padding: 2rem;">
