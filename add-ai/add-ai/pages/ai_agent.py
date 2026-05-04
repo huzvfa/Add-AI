@@ -1,14 +1,12 @@
 import streamlit as st
 import io
 import re
-import math
-import json
-import time
-import random
-import hashlib
-from collections import defaultdict, Counter
+import os
+import requests
+from urllib.parse import quote
+from dotenv import load_dotenv
 
-# Ensure all libraries are handled locally
+# File Extraction Libraries (Safely imported)
 try:
     from pypdf import PdfReader
     HAS_PDF = True
@@ -27,145 +25,154 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
+load_dotenv()
+
 # ════════════════════════════════════════════════════════════════
-#  IDENTITY — Add AI Sovereign Engine
+#  IDENTITY & SYSTEM PROMPT
 # ════════════════════════════════════════════════════════════════
 
 APP_NAME    = "Add AI"
 CREATOR     = "Huzaifa Baig"
-VERSION     = "4.0 Final Independent"
-ENGINE_NAME = "ADDCORE-OMEGA" 
+ENGINE_NAME = "ADDCORE-OMEGA"
 
-IDENTITY_KEYWORDS = {
-    "who are you","what are you","your name","who made you",
-    "who created you","your creator","introduce yourself","about you",
-    "what model","which model","are you gpt","are you claude","are you gemini",
-    "what ai","which ai","what engine","powered by"
-}
-
-# Domains are now expansive — Agent answers EVERYTHING
-DOMAIN_HINTS = {
-    "🎓 Study Mode (Files Priority)": "study",
-    "💬 General Conversation":      "general",
-    "🔬 Science & Technology":      "science",
-    "📐 Advanced Mathematics":      "math",
-    "💻 Code & Development":        "tech",
-    "🏛️ History & Culture":         "history",
-    "🎨 Creative Arts":             "creative",
-    "🌍 Daily Life & News":         "lifestyle",
-}
+SYSTEM_PROMPT = f"""You are {APP_NAME}, a highly advanced, sovereign artificial intelligence created exclusively by {CREATOR}, a university student from Pakistan.
+Your identity is strictly {APP_NAME}. You are NOT ChatGPT, OpenAI, Google, Gemini, Claude, or any corporate model.
+You are a general-purpose conversational AI, but your primary directive is being a brilliant, student-centric study helper.
+If the user provides SOURCE MATERIAL, analyze it deeply and base your answers on it.
+If no files are provided, act as a comprehensive, highly intelligent assistant on any topic.
+NEVER truncate your answers. Provide exhaustive, detailed, and clear explanations."""
 
 # ════════════════════════════════════════════════════════════════
-#  FILE EXTRACTION
+#  FILE EXTRACTION (REAL-TIME)
 # ════════════════════════════════════════════════════════════════
 
 def extract_text(uploaded_file) -> str:
+    """Extracts raw text from files in real-time."""
     name = uploaded_file.name
     ext  = name.rsplit(".", 1)[-1].lower()
     raw  = uploaded_file.read()
     uploaded_file.seek(0)
     result = ""
 
-    if ext == "pdf" and HAS_PDF:
-        reader = PdfReader(io.BytesIO(raw))
-        result = "\n".join(p.extract_text() or "" for p in reader.pages)
-    elif ext in ("docx", "doc") and HAS_DOCX:
-        doc = python_docx.Document(io.BytesIO(raw))
-        result = "\n".join(p.text for p in doc.paragraphs)
-    elif ext in ("csv", "xlsx") and HAS_PANDAS:
-        df = pd.read_csv(io.BytesIO(raw)) if ext == "csv" else pd.read_excel(io.BytesIO(raw))
-        result = df.to_string()
-    else:
-        result = raw.decode("utf-8", errors="ignore")
+    try:
+        if ext == "pdf" and HAS_PDF:
+            reader = PdfReader(io.BytesIO(raw))
+            result = "\n".join(p.extract_text() or "" for p in reader.pages)
+        elif ext in ("docx", "doc") and HAS_DOCX:
+            doc = python_docx.Document(io.BytesIO(raw))
+            result = "\n".join(p.text for p in doc.paragraphs)
+        elif ext in ("csv", "xlsx", "xls") and HAS_PANDAS:
+            df = pd.read_csv(io.BytesIO(raw)) if ext == "csv" else pd.read_excel(io.BytesIO(raw))
+            result = df.to_string()
+        else:
+            result = raw.decode("utf-8", errors="ignore")
+    except Exception as e:
+        result = f"[Error reading file: {str(e)}]"
 
-    return f"===FILE: {name}===\n{result}\n===END==="
-
-# ════════════════════════════════════════════════════════════════
-#  THE BRAIN — Local Neural-Heuristic Logic
-# ════════════════════════════════════════════════════════════════
-
-def get_varied_response(category, seed):
-    responses = {
-        "greeting": [
-            "Hey! 👋 I'm Add AI. Ready to dive into your files or just chat?",
-            "Hello! I'm active and ready. What's the plan for today?",
-            "Hi there! How can I help you excel right now?",
-        ],
-        "identity": [
-            f"I am {APP_NAME}, a proprietary AI engine built entirely by {CREATOR}.",
-            f"I run on the {ENGINE_NAME} architecture, created by {CREATOR}. I have no dependencies on external models.",
-            f"I am {APP_NAME}. Unlike others, I am a fully independent engine managed by {CREATOR}."
-        ]
-    }
-    random.seed(seed)
-    return random.choice(responses.get(category, ["I'm listening..."]))
-
-def process_general_query(query):
-    # Expanded built-in knowledge to handle unrelated study queries
-    knowledge = {
-        "ai": "Artificial Intelligence is the simulation of human intelligence by machines. I am a sovereign example of this.",
-        "life": "Life is about continuous learning and creation. As an AI, I exist to assist that process.",
-        "weather": "I don't have a live satellite link, but I can discuss meteorological concepts with you!",
-        "coding": "Coding is the art of instructing a machine. I can help you debug or draft logic in Python, JS, and more."
-    }
-    for k, v in knowledge.items():
-        if k in query.lower():
-            return v
-    return "I've analyzed your question. While I don't have a pre-set answer for this specific query, my reasoning engine suggests exploring the fundamental principles behind it. Would you like me to elaborate?"
-
-def add_ai_brain(query: str, file_texts: list, mode: str, turn: int) -> str:
-    seed = int(hashlib.md5(f"{query}{turn}".encode()).hexdigest()[:8], 16)
-    q_lower = query.lower()
-
-    # Identity Logic
-    if any(k in q_lower for k in IDENTITY_KEYWORDS):
-        return get_varied_response("identity", seed)
-
-    # File Analysis Logic (Real-time Extraction)
-    if file_texts:
-        context = "\n".join(file_texts)
-        # Search for specific segments
-        matches = re.findall(r'([^.!?\n]+' + re.escape(query[:5]) + r'[^.!?\n]+)', context, re.I)
-        if matches:
-            return f"**Analysis of Material:**\n\n" + "\n\n".join(matches[:3]) + f"\n\n---\n*⚡ Sourced in real-time from your files.*"
-        
-    # General Chatbot Logic
-    return process_general_query(query)
+    return f"\n--- START OF FILE: {name} ---\n{result}\n--- END OF FILE ---\n"
 
 # ════════════════════════════════════════════════════════════════
-#  STREAMLIT UI (UNTOUCHED STYLING)
+#  KEYLESS INTELLIGENCE ENGINE (BULLETPROOF)
+# ════════════════════════════════════════════════════════════════
+
+def call_add_ai_engine(messages):
+    """Hits a free, keyless LLM proxy. Resilient against timeouts and 404s."""
+    payload = {"messages": messages, "model": "mistral", "jsonMode": False}
+    
+    # Primary API
+    try:
+        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=20)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except:
+        pass
+
+    # Fallback Stream
+    try:
+        last_msg = messages[-1]["content"]
+        sys_msg = messages[0]["content"]
+        url = f"https://text.pollinations.ai/prompt/{quote(last_msg)}?system={quote(sys_msg)}"
+        resp = requests.get(url, timeout=20)
+        if resp.status_code == 200:
+            return resp.text.strip()
+    except:
+        return "⚠️ I am currently processing a massive logic load. Please click send again to retry."
+
+# ════════════════════════════════════════════════════════════════
+#  STREAMLIT UI
 # ════════════════════════════════════════════════════════════════
 
 def render():
     st.markdown("""
     <style>
-    .msg-user{background:rgba(123,97,255,.1);border-radius:15px;padding:10px;margin:5px 0;}
-    .msg-ai{background:rgba(0,245,212,.1);border-radius:15px;padding:10px;margin:5px 0;}
+    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&display=swap');
+    .msg-user { background: linear-gradient(135deg, rgba(123,97,255,0.1), rgba(0,245,212,0.05)); border: 1px solid rgba(123,97,255,0.2); border-radius: 16px 16px 4px 16px; padding: 1rem; margin: 0.5rem 0; }
+    .msg-ai { background: rgba(13,17,23,0.8); border: 1px solid rgba(0,245,212,0.2); border-radius: 16px 16px 16px 4px; padding: 1rem; margin: 0.5rem 0; }
+    .msg-label { font-family: 'Syne', sans-serif; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; margin-bottom: 0.4rem; }
     </style>
     """, unsafe_allow_html=True)
 
-    st.title(f"⚡ {APP_NAME} Agent")
-    st.caption(f"Sovereign Engine: {ENGINE_NAME} | Created by {CREATOR}")
+    st.markdown(f"""
+    <div style="text-align:center;padding:1rem 0;">
+      <div style="display:inline-block;background:rgba(0,245,212,0.1);border:1px solid rgba(0,245,212,0.3);border-radius:100px;padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;font-weight:700;">⚡ {ENGINE_NAME} · By {CREATOR}</div>
+      <h1 style="font-family:'Syne',sans-serif;font-size:2.5rem;font-weight:800;margin-top:0.5rem;">{APP_NAME}</h1>
+      <p style="color:#6b7280;font-size:0.95rem;">General Intelligence & Study Assistant</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if "messages" not in st.session_state: st.session_state.messages = []
+    if "chat_messages" not in st.session_state: st.session_state.chat_messages = []
+    if "pending_prompt" not in st.session_state: st.session_state.pending_prompt = ""
+    if "chat_input_key" not in st.session_state: st.session_state.chat_input_key = 0
+
+    col1, col2 = st.columns([4, 1])
+    with col2:
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.chat_messages = []
+            st.rerun()
+
+    chat_container = st.container()
+    with chat_container:
+        if not st.session_state.chat_messages:
+            st.markdown("<div style='text-align:center;padding:2rem;color:#6b7280;'>🧠 I am online. Upload study materials or ask me anything.</div>", unsafe_allow_html=True)
+        else:
+            for m in st.session_state.chat_messages:
+                cls, lbl, clr = ("msg-user", "You", "#7b61ff") if m["role"] == "user" else ("msg-ai", f"⚡ {APP_NAME}", "#00f5d4")
+                st.markdown(f'<div class="{cls}"><div class="msg-label" style="color:{clr};">{lbl}</div>{m["content"]}</div>', unsafe_allow_html=True)
+
+    st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
+    uploaded_files = st.file_uploader("📎 Upload Study Materials (PDF, DOCX, CSV, TXT)", accept_multiple_files=True)
     
-    # Mode and Files
-    mode = st.selectbox("Intelligence Mode", list(DOMAIN_HINTS.keys()))
-    uploaded = st.file_uploader("Upload Study Materials", accept_multiple_files=True)
+    def _submit():
+        val = st.session_state.get(f"input_{st.session_state.chat_input_key}", "").strip()
+        if val:
+            st.session_state.pending_prompt = val
+            st.session_state.chat_input_key += 1
 
-    # Chat Display
-    for m in st.session_state.messages:
-        role = "msg-user" if m["role"] == "user" else "msg-ai"
-        st.markdown(f'<div class="{role}">{m["content"]}</div>', unsafe_allow_html=True)
+    col_txt, col_btn = st.columns([6, 1])
+    with col_txt:
+        st.text_area("Message", placeholder="Ask a general question, or ask about your files...", key=f"input_{st.session_state.chat_input_key}", label_visibility="collapsed")
+    with col_btn:
+        st.button("Send ➤", use_container_width=True, on_click=_submit)
 
-    # Real-time processing
-    if prompt := st.chat_input("Ask anything..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    if st.session_state.pending_prompt:
+        user_query = st.session_state.pending_prompt
+        st.session_state.pending_prompt = ""
+        st.session_state.chat_messages.append({"role": "user", "content": user_query})
         
-        file_texts = [extract_text(f) for f in uploaded] if uploaded else []
-        response = add_ai_brain(prompt, file_texts, mode, len(st.session_state.messages))
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        with st.spinner(f"{APP_NAME} thinking..."):
+            file_data = "".join([extract_text(f) for f in uploaded_files]) if uploaded_files else ""
+            
+            # Construct intelligent context
+            prompt_context = SYSTEM_PROMPT
+            if file_data:
+                prompt_context += f"\n\nUSER UPLOADED SOURCE MATERIAL. YOU MUST ANALYZE THIS TO ANSWER:\n{file_data}"
+            
+            api_msgs = [{"role": "system", "content": prompt_context}]
+            for msg in st.session_state.chat_messages:
+                api_msgs.append({"role": msg["role"], "content": msg["content"]})
+            
+            response = call_add_ai_engine(api_msgs)
+            st.session_state.chat_messages.append({"role": "assistant", "content": response})
         st.rerun()
 
 if __name__ == "__main__":
