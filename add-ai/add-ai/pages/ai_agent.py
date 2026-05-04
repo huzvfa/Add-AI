@@ -3,7 +3,11 @@ import streamlit.components.v1 as components
 import io
 import re
 import requests
+import time
 from dotenv import load_dotenv
+
+# Import the new external error handler
+from pages.guardian import shield_network, shield_ui
 
 # ── Safe Library Imports ──
 try:
@@ -13,20 +17,9 @@ except ImportError:
     HAS_PDF = False
 
 try:
-    import docx as python_docx
-    HAS_DOCX = True
-except ImportError:
-    HAS_DOCX = False
-
-try:
-    import pandas as pd
-    HAS_PANDAS = True
-except ImportError:
-    HAS_PANDAS = False
-
-try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
     HAS_ML = True
 except ImportError:
     HAS_ML = False
@@ -43,8 +36,6 @@ ENGINE_NAME = "ADDCORE-OMEGA"
 
 SYSTEM_PROMPT = f"""You are {APP_NAME}, a sovereign AI created by {CREATOR}.
 Your identity is {APP_NAME}. You are NOT ChatGPT, OpenAI, Gemini, or Claude.
-You are a highly intelligent, student-centric study helper.
-If SOURCE MATERIAL is provided, prioritize it to answer the query accurately.
 Provide brilliant, detailed, and directly helpful answers."""
 
 # ════════════════════════════════════════════════════════════════
@@ -60,162 +51,187 @@ def extract_text(uploaded_file) -> str:
         if ext == "pdf" and HAS_PDF:
             reader = PdfReader(io.BytesIO(raw))
             return "\n".join(p.extract_text() or "" for p in reader.pages)
-        elif ext in ("docx", "doc") and HAS_DOCX:
-            doc = python_docx.Document(io.BytesIO(raw))
-            return "\n".join(p.text for p in doc.paragraphs)
-        elif ext in ("csv", "xlsx", "xls") and HAS_PANDAS:
-            return pd.read_csv(io.BytesIO(raw)).to_string() if ext == "csv" else pd.read_excel(io.BytesIO(raw)).to_string()
         else:
             return raw.decode("utf-8", errors="ignore")
     except Exception as e:
-        return f"[File Error: {str(e)}]"
+        return ""
 
 # ════════════════════════════════════════════════════════════════
-#  LOCAL ML ENGINE (ZERO INTERNET REQUIRED)
+#  LOCAL FALLBACKS (Used automatically by Guardian)
 # ════════════════════════════════════════════════════════════════
 
-def local_semantic_search(query, document):
-    if not HAS_ML: return "Local NLP requires 'scikit-learn' in requirements.txt."
+def local_fallback_logic(messages, file_data):
+    """If the network dies, Guardian forces this function to run instead."""
+    user_query = messages[-1]["content"]
     
-    sentences = [s.strip() for s in re.split(r'(?<=[.!?]) +|\n+', document) if len(s.strip()) > 10]
-    if not sentences: return document[:1000]
-
-    try:
+    # 1. Identity Override
+    q_lower = user_query.lower()
+    if any(x in q_lower for x in ["who are you", "creator"]):
+        return f"I am {APP_NAME}, a sovereign artificial intelligence built entirely by {CREATOR}."
+    
+    # 2. Local File Analysis
+    if file_data and HAS_ML:
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?]) +|\n+', file_data) if len(s.strip()) > 10]
+        if not sentences: return "I analyzed your file offline, but could not extract structured text."
+        
         vectorizer = TfidfVectorizer(stop_words='english')
         tfidf_matrix = vectorizer.fit_transform(sentences)
-        query_vec = vectorizer.transform([query])
+        query_vec = vectorizer.transform([user_query])
         sims = cosine_similarity(query_vec, tfidf_matrix).flatten()
         
-        best_indices = np.argsort(sims)[-3:]
+        best_indices = np.argsort(sims)[-2:]
         best_sentences = [sentences[i] for i in best_indices if sims[i] > 0.05]
         
         if best_sentences:
             return f"**(Local Extraction):** " + " ".join(best_sentences)
-        return "I analyzed your file locally but found no direct match for your query."
-    except Exception as e:
-        return f"Local extraction failed: {str(e)}"
+
+    # 3. Ultimate Conversational Fallback (No errors, ever)
+    return f"I processed your query locally. Please provide more specific details or upload a targeted document so I can assist you better."
 
 # ════════════════════════════════════════════════════════════════
-#  INDESTRUCTIBLE ROUTER
+#  THE MAIN ENGINE (Wrapped by Guardian)
 # ════════════════════════════════════════════════════════════════
 
-def call_add_ai_engine(user_query, file_data):
-    """Guarantees a response. Never throws an offline error if no file is present."""
+@shield_network(fallback_func=local_fallback_logic)
+def call_add_ai_engine(messages, file_data):
+    """The primary network call. If this fails, Guardian intercepts it."""
     
-    # 1. Local Identity Intercept (Instant)
+    user_query = messages[-1]["content"]
+    
+    # Instant Local Identity
     q_lower = user_query.lower()
     if any(x in q_lower for x in ["who are you", "creator", "developer"]):
         return f"I am {APP_NAME}, a sovereign artificial intelligence built entirely by {CREATOR}."
-    
-    if any(x == q_lower.strip() for x in ["hi", "hey", "hello", "sup"]):
-        return f"Hello! I am {APP_NAME}. I'm ready to analyze your study materials or answer any questions you have."
 
-    # 2. Network Attempt (Pollinations Keyless - Fast POST)
     prompt = SYSTEM_PROMPT + f"\n\nDATA:\n{file_data[:3000]}\n\nQUERY: {user_query}" if file_data else f"{SYSTEM_PROMPT}\n\nQUERY: {user_query}"
     
-    try:
-        resp = requests.post("https://text.pollinations.ai/", json={"messages": [{"role": "user", "content": prompt}], "model": "openai"}, timeout=5)
-        if resp.status_code == 200 and resp.text: return resp.text.strip()
-    except Exception:
-        pass # Network failed, move to fallback
-
-    # 3. Ultimate Fallbacks
-    if file_data:
-        # If there is a file, use the math-based local NLP search
-        return local_semantic_search(user_query, file_data)
-    else:
-        # CRITICAL FIX: If there is NO file and NO network, answer natively anyway.
-        return f"My connection to the global compute nodes experienced a hiccup, but I am {APP_NAME}, and I am still online. How can I assist you with your studies?"
+    # API Request
+    resp = requests.post(
+        "https://text.pollinations.ai/", 
+        json={"messages": [{"role": "user", "content": prompt}], "model": "openai"}, 
+        timeout=5
+    )
+    resp.raise_for_status() # This forces an error if the server is blocked, triggering Guardian
+    
+    return resp.text.strip()
 
 # ════════════════════════════════════════════════════════════════
-#  STREAMLIT UI (Global Error Catcher Implemented)
+#  STREAMLIT UI (With Edit & Stop Logic)
 # ════════════════════════════════════════════════════════════════
 
+@shield_ui()
 def render():
-    try:
-        st.markdown("""
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&display=swap');
-        .msg-user { background: linear-gradient(135deg, rgba(123,97,255,0.1), rgba(0,245,212,0.05)); border: 1px solid rgba(123,97,255,0.2); border-radius: 16px 16px 4px 16px; padding: 1rem; margin: 0.5rem 0; }
-        .msg-ai { background: rgba(13,17,23,0.8); border: 1px solid rgba(0,245,212,0.2); border-radius: 16px 16px 16px 4px; padding: 1rem; margin: 0.5rem 0; }
-        .msg-label { font-family: 'Syne', sans-serif; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; margin-bottom: 0.4rem; }
-        @keyframes pulse { 0% { transform: scale(0.95); opacity: 0.7; } 50% { transform: scale(1.05); opacity: 1; } 100% { transform: scale(0.95); opacity: 0.7; } }
-        .logo-anim { font-size: 4rem; animation: pulse 0.8s infinite ease-in-out; display: inline-block; }
-        </style>
-        """, unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&display=swap');
+    .msg-user { background: linear-gradient(135deg, rgba(123,97,255,0.1), rgba(0,245,212,0.05)); border: 1px solid rgba(123,97,255,0.2); border-radius: 16px 16px 4px 16px; padding: 1rem; margin: 0.5rem 0; }
+    .msg-ai { background: rgba(13,17,23,0.8); border: 1px solid rgba(0,245,212,0.2); border-radius: 16px 16px 16px 4px; padding: 1rem; margin: 0.5rem 0; }
+    .msg-label { font-family: 'Syne', sans-serif; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; margin-bottom: 0.4rem; color: #7b61ff; }
+    .edit-btn { background: transparent; border: none; color: #6b7280; cursor: pointer; float: right; font-size: 1.2rem; }
+    .edit-btn:hover { color: #00f5d4; }
+    @keyframes pulse { 0% { transform: scale(0.95); opacity: 0.7; } 50% { transform: scale(1.05); opacity: 1; } 100% { transform: scale(0.95); opacity: 0.7; } }
+    .logo-anim { font-size: 4rem; animation: pulse 0.8s infinite ease-in-out; display: inline-block; }
+    </style>
+    """, unsafe_allow_html=True)
 
-        st.markdown(f"""
-        <div style="text-align:center;padding:1rem 0;">
-          <div style="display:inline-block;background:rgba(0,245,212,0.1);border:1px solid rgba(0,245,212,0.3);border-radius:100px;padding:0.3rem 1rem;font-size:0.75rem;color:#00f5d4;font-weight:700;">⚡ {ENGINE_NAME} · By {CREATOR}</div>
-          <h1 style="font-family:'Syne',sans-serif;font-size:2.5rem;font-weight:800;margin-top:0.5rem;">{APP_NAME}</h1>
-        </div>
-        """, unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="text-align:center;padding:1rem 0;">
+      <h1 style="font-family:'Syne',sans-serif;font-size:2.5rem;font-weight:800;">{APP_NAME}</h1>
+    </div>
+    """, unsafe_allow_html=True)
 
-        if "chat_messages" not in st.session_state: st.session_state.chat_messages = []
-        if "pending_prompt" not in st.session_state: st.session_state.pending_prompt = ""
-        if "chat_input_key" not in st.session_state: st.session_state.chat_input_key = 0
+    # State Initialization
+    if "chat_messages" not in st.session_state: st.session_state.chat_messages = []
+    if "pending_prompt" not in st.session_state: st.session_state.pending_prompt = ""
+    if "editing_idx" not in st.session_state: st.session_state.editing_idx = None
+    if "stop_generation" not in st.session_state: st.session_state.stop_generation = False
 
-        col1, col2 = st.columns([4, 1])
-        with col2:
-            if st.button("🗑️ Clear Chat", use_container_width=True):
-                st.session_state.chat_messages = []
-                st.rerun()
-
-        for m in st.session_state.chat_messages:
-            cls, lbl, clr = ("msg-user", "You", "#7b61ff") if m["role"] == "user" else ("msg-ai", f"⚡ {APP_NAME}", "#00f5d4")
-            st.markdown(f'<div class="{cls}"><div class="msg-label" style="color:{clr};">{lbl}</div>{m["content"]}</div>', unsafe_allow_html=True)
-
-        st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
-        uploaded_files = st.file_uploader("📎 Upload Study Materials", accept_multiple_files=True)
-        
-        def _submit():
-            val = st.session_state.get(f"input_{st.session_state.chat_input_key}", "").strip()
-            if val:
-                st.session_state.pending_prompt = val
-                st.session_state.chat_input_key += 1
-
-        col_txt, col_btn = st.columns([6, 1])
-        with col_txt:
-            st.text_area("Message", placeholder="Ask a question, hit Enter to send...", key=f"input_{st.session_state.chat_input_key}", label_visibility="collapsed")
-        with col_btn:
-            st.button("Send ➤", key="send_button_main", use_container_width=True, on_click=_submit)
-
-        components.html("""
-        <script>
-        const doc = window.parent.document;
-        const textareas = doc.querySelectorAll('textarea');
-        if(textareas.length > 0) {
-            textareas[0].addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    const buttons = Array.from(doc.querySelectorAll('button'));
-                    const sendBtn = buttons.find(b => b.innerText.includes('Send ➤'));
-                    if (sendBtn) sendBtn.click();
-                }
-            });
-        }
-        </script>
-        """, height=0, width=0)
-
-        if st.session_state.pending_prompt:
-            user_query = st.session_state.pending_prompt
-            st.session_state.pending_prompt = ""
-            st.session_state.chat_messages.append({"role": "user", "content": user_query})
-            
-            anim_placeholder = st.empty()
-            anim_placeholder.markdown(f"""<div style="text-align:center; padding: 2rem;"><div class="logo-anim">⚡</div></div>""", unsafe_allow_html=True)
-            
-            file_data = "".join([extract_text(f) for f in uploaded_files]) if uploaded_files else ""
-            response = call_add_ai_engine(user_query, file_data)
-            
-            anim_placeholder.empty()
-            st.session_state.chat_messages.append({"role": "assistant", "content": response})
+    col1, col2 = st.columns([4, 1])
+    with col2:
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.chat_messages = []
             st.rerun()
 
-    except Exception as e:
-        # THE GLOBAL ERROR CATCHER - Automatically suppresses crashes in the UI
-        st.error("The UI encountered an automatic reset. Your data is safe.")
-        print(f"Handled Crash: {str(e)}")
+    # ── MESSAGE RENDERER WITH EDIT (✏️) FUNCTIONALITY ──
+    for i, m in enumerate(st.session_state.chat_messages):
+        if m["role"] == "user":
+            col_msg, col_edit = st.columns([11, 1])
+            with col_msg:
+                st.markdown(f'<div class="msg-user"><div class="msg-label">You</div>{m["content"]}</div>', unsafe_allow_html=True)
+            with col_edit:
+                if st.button("✏️", key=f"edit_{i}", help="Edit Message"):
+                    st.session_state.editing_idx = i
+                    st.rerun()
+            
+            # Show edit box if this message is being edited
+            if st.session_state.editing_idx == i:
+                new_val = st.text_area("Edit your prompt:", value=m["content"], key=f"edit_area_{i}")
+                if st.button("Save & Regenerate", key=f"save_{i}"):
+                    # Slice history back to this point and trigger new prompt
+                    st.session_state.chat_messages = st.session_state.chat_messages[:i]
+                    st.session_state.pending_prompt = new_val
+                    st.session_state.editing_idx = None
+                    st.rerun()
+        else:
+            st.markdown(f'<div class="msg-ai"><div class="msg-label" style="color:#00f5d4;">⚡ {APP_NAME}</div>{m["content"]}</div>', unsafe_allow_html=True)
+
+    st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
+    uploaded_files = st.file_uploader("📎 Upload Study Materials", accept_multiple_files=True)
+    
+    def _submit():
+        val = st.session_state.get("main_input", "").strip()
+        if val:
+            st.session_state.pending_prompt = val
+            st.session_state.main_input = ""
+
+    col_txt, col_btn = st.columns([6, 1])
+    with col_txt:
+        st.text_input("Message", placeholder="Ask a question, hit Enter to send...", key="main_input", on_change=_submit, label_visibility="collapsed")
+    with col_btn:
+        st.button("Send ➤", use_container_width=True, on_click=_submit)
+
+    # ── MESSAGE PROCESSING WITH STOP (🛑) LOGIC ──
+    if st.session_state.pending_prompt:
+        user_query = st.session_state.pending_prompt
+        st.session_state.pending_prompt = ""
+        st.session_state.stop_generation = False
+        st.session_state.chat_messages.append({"role": "user", "content": user_query})
+        st.rerun()
+
+    # If the last message is from the user, the AI needs to respond
+    if st.session_state.chat_messages and st.session_state.chat_messages[-1]["role"] == "user":
+        
+        # UI for Generation + Stop Button
+        gen_col1, gen_col2 = st.columns([4, 1])
+        with gen_col1:
+            anim_placeholder = st.empty()
+            anim_placeholder.markdown(f"""
+            <div style="text-align:center; padding: 1rem;">
+                <div class="logo-anim">⚡</div>
+                <div style="color: #00f5d4; font-weight: bold; margin-top: 0.5rem;">Generating...</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with gen_col2:
+            if st.button("🛑 Stop", key="stop_btn"):
+                st.session_state.stop_generation = True
+                st.rerun()
+
+        # Check if user hit stop
+        if st.session_state.stop_generation:
+            anim_placeholder.empty()
+            st.session_state.chat_messages.append({"role": "assistant", "content": "*(Generation Stopped by User)*"})
+            st.session_state.stop_generation = False
+            st.rerun()
+
+        # Extract File Data
+        file_data = "".join([extract_text(f) for f in uploaded_files]) if uploaded_files else ""
+        
+        # Call the Guardian-wrapped engine
+        response = call_add_ai_engine(st.session_state.chat_messages, file_data)
+        
+        anim_placeholder.empty()
+        st.session_state.chat_messages.append({"role": "assistant", "content": response})
+        st.rerun()
 
 if __name__ == "__main__":
     render()
