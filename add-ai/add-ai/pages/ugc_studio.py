@@ -1,16 +1,10 @@
 import streamlit as st
-import google.generativeai as genai
 import requests
 import base64
 import os
 import time
 import json
-import random
-from urllib.parse import quote
 from io import BytesIO
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ── Voice Agents ─────────────────────────────────────────────────────────────
 
@@ -40,161 +34,188 @@ TONE_DESCRIPTIONS = {
     "Persuasive": "sales-oriented, compelling, urgent",
 }
 
-# ── Bulletproof Key Fetcher ───────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def get_key(env_var_name, session_state_name):
-    """Aggressively checks for keys across Sidebar, Streamlit Secrets, and .env"""
-    if st.session_state.get(session_state_name):
-        return st.session_state[session_state_name]
-    
-    try:
-        if env_var_name in st.secrets:
-            return st.secrets[env_var_name]
-    except Exception:
-        pass
-        
-    return os.environ.get(env_var_name, "")
-
-# ── Helpers & Anti-429 Gemini Fallback ────────────────────────────────────────
-
-def get_gemini_client():
-    key = get_key("GOOGLE_API_KEY", "google_key")
-    if key:
-        genai.configure(api_key=key)
-        return genai.GenerativeModel(model_name='gemini-2.5-flash')
-    return None
+def get_replicate_token():
+    return os.environ.get("REPLICATE_API_TOKEN") or st.session_state.get("replicate_key", "")
 
 def get_elevenlabs_key():
-    return get_key("ELEVENLABS_API_KEY", "elevenlabs_key")
+    return os.environ.get("ELEVENLABS_API_KEY") or st.session_state.get("elevenlabs_key", "")
 
-def safe_ai_generate(client, prompt):
-    """Bypasses Gemini Quota 429 Errors by instantly falling back to an uncapped API."""
-    if client:
-        try:
-            response = client.generate_content(prompt)
-            return response.text.strip()
-        except Exception:
-            pass # Quota exceeded or error, smoothly catch it and fall back
-            
-    # The 100% free, uncapped fallback
+_STYLE_MODIFIERS = {
+    "Lifestyle / Authentic": "golden hour lighting, authentic lifestyle, relatable, warm tones, soft bokeh",
+    "Product Showcase":      "clean product shot, studio lighting, sharp focus, neutral background, professional",
+    "Before/After":          "split composition, transformation theme, contrast lighting, dramatic reveal",
+    "Cinematic":             "cinematic wide shot, dramatic lighting, film grain, anamorphic lens, epic mood, 4K",
+    "Social Media Native":   "vertical format, bright colors, trendy aesthetic, eye-catching, UGC native feel",
+    "Minimalist":            "minimalist composition, negative space, clean lines, muted palette, elegant",
+}
+_MOTION_WORDS = {
+    "Subtle":   "very subtle gentle motion, barely noticeable animation",
+    "Gentle":   "smooth gentle camera drift, soft motion, calm movement",
+    "Moderate": "moderate camera movement, steady pan, natural motion",
+    "Dynamic":  "dynamic camera movement, energetic motion, cinematic tracking",
+    "Intense":  "intense fast motion, dramatic camera shake, high energy",
+}
+
+def enhance_prompt_locally(prompt: str, mode: str, style: str = "", motion: str = "") -> str:
+    """Autonomous prompt enhancement — no external AI needed."""
+    base = prompt.strip().rstrip(".")
+    if mode == "text-image":
+        style_mod = _STYLE_MODIFIERS.get(style, "authentic UGC style, lifestyle aesthetic")
+        return f"{base}, {style_mod}, high resolution, professional photography, viral content quality"[:480]
+    elif mode == "image-image":
+        style_mod = _STYLE_MODIFIERS.get(style, "UGC lifestyle transformation")
+        return f"{base}, {style_mod}, seamless style transfer, preserve subject, professional color grading"[:480]
+    elif mode == "text-video":
+        return f"{base}, smooth cinematic motion, authentic UGC video style, natural lighting, engaging scene progression"[:480]
+    elif mode == "image-video":
+        motion_mod = _MOTION_WORDS.get(motion, "smooth natural motion")
+        return f"{base}, {motion_mod}, realistic physics, smooth interpolation, maintain composition"[:480]
+    return f"{base}, high quality, professional, detailed"[:480]
+
+def generate_image_replicate(prompt, image_data=None):
+    """Generate image using Replicate's FLUX model."""
+    token = get_replicate_token()
+    if not token:
+        return None, "No Replicate API token provided"
+    
+    headers = {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json"
+    }
+    
+    if image_data:
+        # Image-to-image
+        payload = {
+            "version": "ac732df83cea7fff18b8472768c88ad041fa750e7a4f6dab96d1c8b26dfd0a7e",  # SDXL
+            "input": {
+                "prompt": prompt,
+                "image": f"data:image/png;base64,{image_data}",
+                "prompt_strength": 0.75,
+                "num_inference_steps": 30,
+                "guidance_scale": 7.5
+            }
+        }
+    else:
+        # Text-to-image (FLUX Schnell - free tier)
+        payload = {
+            "version": "black-forest-labs/flux-schnell",
+            "input": {
+                "prompt": prompt,
+                "num_outputs": 1,
+                "aspect_ratio": "1:1",
+                "output_format": "webp",
+                "output_quality": 90
+            }
+        }
+    
     try:
-        fallback_url = f"https://text.pollinations.ai/prompt/{quote(prompt)}?model=openai"
-        resp = requests.get(fallback_url, timeout=15)
-        if resp.status_code == 200:
-            return resp.text.strip()
-    except Exception:
-        pass
-    
-    return prompt
-
-def enhance_prompt_with_gemini(client, prompt, mode):
-    system = f"You are a UGC (User Generated Content) creative director. Transform basic prompts into highly detailed, cinematic generation prompts. Return ONLY the enhanced prompt, nothing else.\n\nMode: {mode}\nOriginal prompt: {prompt}"
-    return safe_ai_generate(client, system)
-
-def generate_script_with_gemini(client, description, tone, duration_sec=15):
-    prompt = f"""Write a {duration_sec}-second UGC video script.
-Style: {tone}
-Product/Scene: {description}
-Requirements: Sound natural and authentic, hook in first 3 seconds, clear conversational language.
-Return ONLY the spoken script text (no stage directions, no explanations)."""
-    return safe_ai_generate(client, prompt)
-
-# ── Media Engines ─────────────────────────────────────────────────────────────
-
-def generate_image_hf(prompt):
-    """10-Server Image Cascade + Direct Browser Bypass."""
-    hf_token = get_key("HF_TOKEN", "hf_token")
-    
-    if not hf_token:
-        return None, "🔑 Missing Hugging Face Token. Please add your free token in the sidebar."
-    
-    models_to_try = [
-        "stabilityai/stable-diffusion-xl-base-1.0",
-        "prompthero/openjourney",
-        "stabilityai/stable-diffusion-3.5-large",
-        "runwayml/stable-diffusion-v1-5",
-        "black-forest-labs/FLUX.1-schnell",
-        "stabilityai/stable-diffusion-2-1",
-        "SG161222/Realistic_Vision_V1.4",
-        "dreamlike-art/dreamlike-diffusion-1.0",
-        "Wavymulder/Analog-Diffusion",
-        "Lykon/DreamShaper"
-    ]
-    
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    payload = {"inputs": prompt}
-    
-    for model in models_to_try:
-        API_URL = f"https://api-inference.huggingface.co/models/{model}"
-        try:
-            resp = requests.post(API_URL, headers=headers, json=payload, timeout=8)
-            if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', '').lower():
-                return resp.content, None
-        except Exception:
-            continue 
-
-    # ULTIMATE BYPASS: If all 10 servers fail, return the direct browser URL
-    seed = random.randint(1, 100000)
-    fallback_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?seed={seed}&width=1024&height=1024&nologo=true"
-    return fallback_url, None
-
-def generate_video_free(prompt, status_ui=None):
-    """The Infinite Hammer: Ruthlessly loops HF servers until a video is generated."""
-    hf_token = get_key("HF_TOKEN", "hf_token")
-    if not hf_token:
-        return None, "🔑 Missing Hugging Face Token. Add it in the sidebar to generate free videos."
+        resp = requests.post("https://api.replicate.com/v1/predictions", 
+                             headers=headers, json=payload, timeout=30)
+        if resp.status_code != 201:
+            return None, f"API Error: {resp.status_code} - {resp.text[:200]}"
         
-    hf_models = [
-        "THUDM/CogVideoX-5b",
-        "THUDM/CogVideoX-2b",
-        "ByteDance/ModelScope-text-to-video-synthesis",
-        "damo-vilab/text-to-video-ms-1.7b",
-        "ali-vilab/text-to-video-ms-1.7b"
-    ]
-    
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    payload = {"inputs": prompt}
-    
-    attempt = 1
-    
-    while True:
-        for model in hf_models:
-            model_name = model.split('/')[1]
-            if status_ui:
-                status_ui.update(label=f"🔨 Attempt {attempt}: Forcing slot on `{model_name}`...", state="running")
+        prediction = resp.json()
+        pred_id = prediction["id"]
+        
+        # Poll for result
+        for _ in range(60):
+            time.sleep(2)
+            poll = requests.get(f"https://api.replicate.com/v1/predictions/{pred_id}",
+                               headers=headers, timeout=10)
+            result = poll.json()
             
-            API_URL = f"https://api-inference.huggingface.co/models/{model}"
-            
-            try:
-                resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+            if result["status"] == "succeeded":
+                output = result.get("output", [])
+                if isinstance(output, list) and output:
+                    img_url = output[0]
+                elif isinstance(output, str):
+                    img_url = output
+                else:
+                    return None, "No output URL in response"
                 
-                if resp.status_code == 200:
-                    if status_ui:
-                        status_ui.update(label=f"✅ Slot secured on attempt {attempt}!", state="complete")
-                    return resp.content, None
-                
-                elif resp.status_code in [400, 422]:
-                    return None, f"Prompt rejected by Hugging Face (Safety filter or invalid input): {resp.text}"
-                
-                elif resp.status_code == 503:
-                    if status_ui:
-                        status_ui.update(label=f"⏳ `{model_name}` is booting up. Holding the line...", state="running")
-                    time.sleep(15)
-                    resp_retry = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-                    if resp_retry.status_code == 200:
-                        return resp_retry.content, None
-            
-            except Exception:
-                pass # Ignore timeouts and instantly move to the next model
-            
-        attempt += 1
-        time.sleep(1.5)
+                img_resp = requests.get(img_url, timeout=30)
+                return img_resp.content, None
+            elif result["status"] == "failed":
+                return None, f"Generation failed: {result.get('error', 'Unknown error')}"
+        
+        return None, "Timeout: Generation took too long"
+    except Exception as e:
+        return None, str(e)
 
-def generate_tts_elevenlabs(script, voice_id, tone):
+def generate_video_replicate(prompt, image_data=None):
+    """Generate video using Replicate."""
+    token = get_replicate_token()
+    if not token:
+        return None, "No Replicate API token"
+    
+    headers = {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json"
+    }
+    
+    if image_data:
+        # Image to video - Stable Video Diffusion
+        payload = {
+            "version": "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
+            "input": {
+                "input_image": f"data:image/png;base64,{image_data}",
+                "video_length": "25_frames_with_svd_xt",
+                "sizing_strategy": "maintain_aspect_ratio",
+                "frames_per_second": 6,
+                "motion_bucket_id": 127,
+                "cond_aug": 0.02,
+                "decoding_t": 7,
+            }
+        }
+    else:
+        # Text to video - Zeroscope
+        payload = {
+            "version": "9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351",
+            "input": {
+                "prompt": prompt,
+                "num_frames": 24,
+                "num_inference_steps": 50,
+                "fps": 8,
+                "width": 576,
+                "height": 320
+            }
+        }
+    
+    try:
+        resp = requests.post("https://api.replicate.com/v1/predictions",
+                             headers=headers, json=payload, timeout=30)
+        if resp.status_code != 201:
+            return None, f"API Error: {resp.status_code}"
+        
+        pred_id = resp.json()["id"]
+        
+        for _ in range(120):
+            time.sleep(3)
+            poll = requests.get(f"https://api.replicate.com/v1/predictions/{pred_id}",
+                               headers=headers, timeout=10)
+            result = poll.json()
+            
+            if result["status"] == "succeeded":
+                output = result.get("output", [])
+                url = output[0] if isinstance(output, list) else output
+                video_resp = requests.get(url, timeout=60)
+                return video_resp.content, None
+            elif result["status"] == "failed":
+                return None, f"Failed: {result.get('error', 'Unknown')}"
+        
+        return None, "Timeout"
+    except Exception as e:
+        return None, str(e)
+
+def generate_tts_elevenlabs(script, voice_id, tone, stability=0.5, similarity=0.75):
+    """Generate TTS audio using ElevenLabs."""
     api_key = get_elevenlabs_key()
     if not api_key:
-        return None, "No ElevenLabs API key. (Note: ElevenLabs has a free tier of 10,000 chars/month, but requires an account)."
+        return None, "No ElevenLabs API key"
     
+    # Adjust settings based on tone
     tone_settings = {
         "Natural": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.0},
         "Enthusiastic": {"stability": 0.3, "similarity_boost": 0.85, "style": 0.8},
@@ -228,6 +249,32 @@ def generate_tts_elevenlabs(script, voice_id, tone):
         return None, f"ElevenLabs error: {resp.status_code} - {resp.text[:200]}"
     except Exception as e:
         return None, str(e)
+
+def generate_script_with_claude(client, description, tone, duration_sec=15):
+    """Generate UGC video script using Claude."""
+    prompt = f"""Write a {duration_sec}-second UGC video script.
+Style: {tone}
+Product/Scene: {description}
+
+Requirements:
+- Sound natural and authentic, NOT like an ad
+- Include action cues in [brackets] sparingly
+- Hook in first 3 seconds
+- Clear, conversational language
+- End with soft CTA or memorable line
+- Script should be speakable in ~{duration_sec} seconds ({duration_sec * 2} words max)
+
+Return ONLY the spoken script text (no stage directions, no explanations)."""
+    
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        return f"Script generation failed: {e}"
 
 # ── Main Render ───────────────────────────────────────────────────────────────
 
@@ -277,7 +324,16 @@ def render():
       animation: glow-pulse 3s ease-in-out infinite;
       border-radius: 16px;
       overflow: hidden;
-      margin-top: 1rem;
+    }
+    .voice-pill {
+      background: rgba(123,97,255,0.1);
+      border: 1px solid rgba(123,97,255,0.25);
+      border-radius: 100px;
+      padding: 0.3rem 0.8rem;
+      font-size: 0.8rem;
+      color: #7b61ff;
+      cursor: pointer;
+      transition: all 0.2s;
     }
     .shimmer-text {
       background: linear-gradient(90deg, #00f5d4, #7b61ff, #ff6b6b, #00f5d4);
@@ -292,7 +348,6 @@ def render():
       background: linear-gradient(90deg, #00f5d4, #7b61ff);
       animation: shimmer 1.5s linear infinite;
       background-size: 200% auto;
-      margin: 1rem 0;
     }
     </style>
     
@@ -313,18 +368,22 @@ def render():
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Mode Tabs ─────────────────────────────────────────────────────────────
     tabs = st.tabs(["🖼️ Text → Image", "🔄 Image → Image", "🎬 Text → Video", "📽️ Image → Video"])
 
-    client = get_gemini_client()
-
-    # ── Tab 1: Text to Image ──────────────────────────────────────────────────
+        # ── Tab 1: Text to Image ──────────────────────────────────────────────────
     with tabs[0]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
         st.markdown('<span class="mode-badge">✨ Text → Image</span>', unsafe_allow_html=True)
+        st.markdown("""
+        <p style="color:#9ca3af;font-size:0.9rem;margin:0.75rem 0;">
+        Describe your UGC scene and AI will craft a production-ready image.
+        </p>
+        """, unsafe_allow_html=True)
         
         t2i_prompt = st.text_area(
             "Scene Description",
-            placeholder="e.g. A confident young woman holding a sleek skincare bottle, golden hour lighting...",
+            placeholder="e.g. A confident young woman holding a sleek skincare bottle, golden hour lighting, lifestyle aesthetic, soft bokeh background, authentic UGC feel...",
             height=120,
             key="t2i_prompt",
             label_visibility="collapsed"
@@ -342,37 +401,34 @@ def render():
         if st.button("🎨 Generate Image", key="t2i_gen", use_container_width=True):
             if not t2i_prompt.strip():
                 st.warning("Please enter a description.")
-            elif not get_key("HF_TOKEN", "hf_token"):
-                st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
+            elif not get_replicate_token():
+                st.error("🔑 Add your Replicate API token in the sidebar to generate images.")
             else:
-                with st.status("🎨 Creating your UGC image via AI...", expanded=True) as status:
-                    final_prompt = t2i_prompt.strip()
-                    if t2i_enhance:
-                        st.write("✨ Enhancing prompt with Gemini...")
-                        final_prompt = enhance_prompt_with_gemini(client, f"[{t2i_style}] {final_prompt}", "text-image")
-                        st.write(f"📝 Enhanced: *{final_prompt[:100]}...*")
+                with st.status("🎨 Creating your UGC image...", expanded=True) as status:
+                    st.write("🧠 Analyzing your vision...")
                     
+                    final_prompt = t2i_prompt.strip()
+                    if t2i_enhance and client:
+                        st.write("✨ Enhancing prompt with AI...")
+                        final_prompt = enhance_prompt_locally(f"[Style: {t2i_style}] {final_prompt}", "text-image")
+                        st.write(f"📝 Enhanced: *{final_prompt[:100]}...*" if len(final_prompt) > 100 else f"📝 Enhanced: *{final_prompt}*")
+                    
+                    st.write("🖼️ Generating image...")
                     st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
                     
-                    img_data, err = generate_image_hf(final_prompt)
+                    img_data, err = generate_image_replicate(final_prompt)
                     
                     if err:
                         status.update(label="❌ Generation failed", state="error")
-                        st.error(err)
+                        st.error(f"Error: {err}")
                     else:
                         status.update(label="✅ Image ready!", state="complete")
                         st.markdown('<div class="output-frame">', unsafe_allow_html=True)
-                        
-                        if isinstance(img_data, str) and img_data.startswith("http"):
-                            st.markdown(f'<img src="{img_data}" style="width:100%; border-radius:16px; margin-bottom:1rem;">', unsafe_allow_html=True)
-                            st.markdown('</div>', unsafe_allow_html=True)
-                            st.info("💡 **Generated via Browser Bypass to avoid server overload.** Right-click the image and select 'Save Image As...' to download.")
-                        else:
-                            st.image(img_data, use_container_width=True)
-                            st.markdown('</div>', unsafe_allow_html=True)
-                            st.download_button("⬇️ Download Image", img_data, 
-                                              "ugc_image.png", "image/png",
-                                              use_container_width=True)
+                        st.image(img_data, use_container_width=True)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        st.download_button("⬇️ Download Image", img_data, 
+                                          "ugc_image.webp", "image/webp",
+                                          use_container_width=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -380,7 +436,6 @@ def render():
     with tabs[1]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
         st.markdown('<span class="mode-badge">🔄 Image → Image</span>', unsafe_allow_html=True)
-        st.markdown("<p style='font-size:0.8rem;color:#ff6b6b;'>Note: Free tier models generate a new image based entirely on your text description.</p>", unsafe_allow_html=True)
         
         i2i_upload = st.file_uploader("Upload source image", 
                                        type=["png","jpg","jpeg","webp"],
@@ -395,50 +450,55 @@ def render():
         
         i2i_prompt = st.text_area(
             "Transformation Description",
-            placeholder="e.g. A completely new image of a golden hour lifestyle aesthetic, warm tones...",
+            placeholder="e.g. Transform to golden hour lifestyle aesthetic, warm tones, authentic UGC style, slight film grain...",
             height=100,
             key="i2i_prompt",
             label_visibility="collapsed"
         )
         
-        if st.button("🔄 Generate New Image", key="i2i_gen", use_container_width=True):
-            if not i2i_prompt.strip():
-                st.warning("Please enter a description.")
-            elif not get_key("HF_TOKEN", "hf_token"):
-                st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
+        i2i_strength = st.slider("Transformation Strength", 0.3, 0.95, 0.7, 0.05,
+                                  help="Higher = more transformation, lower = closer to original")
+        
+        if st.button("🔄 Transform Image", key="i2i_gen", use_container_width=True):
+            if not i2i_upload:
+                st.warning("Please upload an image.")
+            elif not i2i_prompt.strip():
+                st.warning("Please enter a transformation description.")
+            elif not get_replicate_token():
+                st.error("🔑 Add your Replicate API token in the sidebar.")
             else:
-                with st.status("🔄 Generating...", expanded=True) as status:
-                    final_prompt = enhance_prompt_with_gemini(client, i2i_prompt.strip(), "text-image")
+                with st.status("🔄 Transforming your image...", expanded=True) as status:
+                    img_b64 = base64.b64encode(i2i_upload.read()).decode()
                     
-                    img_data, err = generate_image_hf(final_prompt)
+                    final_prompt = i2i_prompt.strip()
+                    if True:
+                        final_prompt = enhance_prompt_locally(final_prompt, "image-image")
+                    
+                    img_data, err = generate_image_replicate(final_prompt, img_b64)
                     
                     if err:
                         status.update(label="❌ Failed", state="error")
-                        st.error(err)
+                        st.error(f"Error: {err}")
                     else:
-                        status.update(label="✅ Generated!", state="complete")
-                        st.markdown('<div class="output-frame">', unsafe_allow_html=True)
-                        
-                        if isinstance(img_data, str) and img_data.startswith("http"):
-                            st.markdown(f'<img src="{img_data}" style="width:100%; border-radius:16px; margin-bottom:1rem;">', unsafe_allow_html=True)
-                            st.markdown('</div>', unsafe_allow_html=True)
-                            st.info("💡 Right-click the image and select 'Save Image As...' to download.")
-                        else:
+                        status.update(label="✅ Transformed!", state="complete")
+                        with col2:
+                            st.markdown("**Transformed**")
+                            st.markdown('<div class="output-frame">', unsafe_allow_html=True)
                             st.image(img_data, use_container_width=True)
                             st.markdown('</div>', unsafe_allow_html=True)
-                            st.download_button("⬇️ Download", img_data, "transformed.png", "image/png",
-                                              use_container_width=True)
+                        st.download_button("⬇️ Download", img_data, "transformed.webp", "image/webp",
+                                          use_container_width=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Tab 3: Text to Video ──────────────────────────────────────────────────
     with tabs[2]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">🎬 Text → Video (Infinite Loop)</span>', unsafe_allow_html=True)
+        st.markdown('<span class="mode-badge">🎬 Text → Video</span>', unsafe_allow_html=True)
         
         t2v_prompt = st.text_area(
             "Scene Description",
-            placeholder="e.g. A woman discovering an amazing skincare product...",
+            placeholder="e.g. A woman discovering an amazing skincare product, close-up reaction, holding product up, natural lighting, authentic and relatable...",
             height=100,
             key="t2v_prompt",
             label_visibility="collapsed"
@@ -462,17 +522,19 @@ def render():
                     if t2v_prompt:
                         with st.spinner("Writing your script..."):
                             tone_for_script = st.session_state.get("t2v_tone", "Natural")
-                            script = generate_script_with_gemini(client, t2v_prompt, tone_for_script, script_duration)
+                            script = generate_script_with_claude(client, t2v_prompt, 
+                                                                 tone_for_script, script_duration)
                             st.session_state.generated_script = script
             
             t2v_script = st.text_area(
                 "Voiceover Script",
                 value=st.session_state.get("generated_script", ""),
+                placeholder="What the narrator or character says in the video...",
                 height=120,
                 key="t2v_script"
             )
             
-            st.markdown("### 🎭 Voice Agent (ElevenLabs - Free Tier Account Required)")
+            st.markdown("### 🎭 Voice Agent")
             v_col1, v_col2, v_col3 = st.columns(3)
             
             with v_col1:
@@ -482,59 +544,78 @@ def render():
                 selected_voice = st.selectbox("Voice", voices, key="t2v_voice")
             with v_col3:
                 tone = st.selectbox("Tone", list(TONE_DESCRIPTIONS.keys()), key="t2v_tone")
+            
+            st.markdown(f"""
+            <div style="background:rgba(123,97,255,0.08);border:1px solid rgba(123,97,255,0.2);
+                        border-radius:12px;padding:0.75rem;font-size:0.8rem;color:#9ca3af;margin:0.5rem 0;">
+              🎙️ <strong style="color:#7b61ff;">{selected_voice}</strong> · {TONE_DESCRIPTIONS.get(tone, '')}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Preview audio
+            if st.button("▶️ Preview Voice", key="preview_voice"):
+                preview_text = t2v_script[:100] if t2v_script else "This is a preview of your selected voice agent."
+                if not get_elevenlabs_key():
+                    st.error("🔑 Add ElevenLabs API key in sidebar for voice preview.")
+                else:
+                    with st.spinner("Generating voice preview..."):
+                        voice_id = VOICE_AGENTS[gender][selected_voice]
+                        audio, err = generate_tts_elevenlabs(preview_text, voice_id, tone)
+                        if audio:
+                            st.audio(audio, format="audio/mp3")
+                        else:
+                            st.error(f"Voice preview failed: {err}")
         
         st.markdown("---")
         
         if st.button("🎬 Generate Video + Audio", key="t2v_gen", use_container_width=True):
             if not t2v_prompt.strip():
                 st.warning("Please enter a scene description.")
-            elif not get_key("HF_TOKEN", "hf_token"):
-                st.error("🔑 Hugging Face Token Required. Add it in the Streamlit Secrets or sidebar settings.")
+            elif not get_replicate_token():
+                st.error("🔑 Add Replicate API token in sidebar.")
             else:
-                with st.status("🎬 Processing Media Request...", expanded=True) as status:
+                with st.status("🎬 Creating your UGC video...", expanded=True) as status:
                     final_prompt = t2v_prompt.strip()
-                    status.update(label="✨ Enhancing prompt...", state="running")
-                    final_prompt = enhance_prompt_with_gemini(client, final_prompt, "text-video")
+                    if True:
+                        st.write("✨ Enhancing prompt...")
+                        final_prompt = enhance_prompt_locally(final_prompt, "text-video")
                     
-                    st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
+                    # Generate video
+                    st.write("🎬 Generating video (this takes 2-3 minutes)...")
+                    video_data, v_err = generate_video_replicate(final_prompt)
                     
-                    video_data, v_err = generate_video_free(final_prompt, status)
-                    
+                    # Generate audio if requested
                     audio_data = None
-                    a_err = None
                     if use_script and t2v_script.strip() and get_elevenlabs_key():
-                        status.update(label="🎙️ Generating voiceover...", state="running")
+                        st.write("🎙️ Generating voiceover...")
                         voice_id = VOICE_AGENTS[gender][selected_voice]
                         audio_data, a_err = generate_tts_elevenlabs(t2v_script, voice_id, tone)
                     
-                    if v_err:
-                        status.update(label="❌ Generation Error", state="error")
-                        st.error(v_err)
+                    if v_err and not video_data:
+                        status.update(label="❌ Video generation failed", state="error")
+                        st.error(f"Video error: {v_err}")
                     else:
                         status.update(label="✅ Content ready!", state="complete")
-                        st.markdown('<div class="output-frame">', unsafe_allow_html=True)
-                        st.video(video_data)
-                        st.markdown('</div>', unsafe_allow_html=True)
-                        st.download_button("⬇️ Download Video", video_data, 
-                                          "ugc_video.mp4", "video/mp4",
-                                          use_container_width=True)
-                    
-                    if audio_data:
-                        st.markdown("**🎙️ Voiceover Audio:**")
-                        st.audio(audio_data, format="audio/mp3")
-                        st.download_button("⬇️ Download Audio", audio_data,
-                                          "voiceover.mp3", "audio/mp3",
-                                          use_container_width=True)
-                    elif a_err:
-                        st.error(a_err)
+                        
+                        if video_data:
+                            st.video(video_data)
+                            st.download_button("⬇️ Download Video", video_data, 
+                                              "ugc_video.mp4", "video/mp4",
+                                              use_container_width=True)
+                        
+                        if audio_data:
+                            st.markdown("**🎙️ Voiceover Audio:**")
+                            st.audio(audio_data, format="audio/mp3")
+                            st.download_button("⬇️ Download Audio", audio_data,
+                                              "voiceover.mp3", "audio/mp3",
+                                              use_container_width=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Tab 4: Image to Video ─────────────────────────────────────────────────
     with tabs[3]:
         st.markdown('<div class="studio-card">', unsafe_allow_html=True)
-        st.markdown('<span class="mode-badge">📽️ Image → Video (Infinite Loop)</span>', unsafe_allow_html=True)
-        st.markdown("<p style='font-size:0.8rem;color:#ff6b6b;'>Note: The free tier API generates a new video based on your text description, not strictly locked to the image structure.</p>", unsafe_allow_html=True)
+        st.markdown('<span class="mode-badge">📽️ Image → Video</span>', unsafe_allow_html=True)
         
         i2v_upload = st.file_uploader("Upload image to animate",
                                        type=["png","jpg","jpeg","webp"],
@@ -546,49 +627,99 @@ def render():
         
         i2v_prompt = st.text_area(
             "Animation Direction",
-            placeholder="e.g. Subtle camera zoom in, cinematic...",
+            placeholder="e.g. Subtle camera zoom in, product rotates slowly, steam rising, hair blowing gently in breeze...",
             height=100,
             key="i2v_prompt",
             label_visibility="collapsed"
         )
         
+        st.markdown("---")
+        st.markdown("### 🎙️ Add Voiceover")
+        
+        i2v_use_voice = st.toggle("Add Voiceover Script", value=False, key="i2v_use_voice")
+        
+        if i2v_use_voice:
+            i2v_script = st.text_area("Script", 
+                                       placeholder="What should the narrator say?",
+                                       height=80, key="i2v_script")
+            
+            v_col1, v_col2, v_col3 = st.columns(3)
+            with v_col1:
+                i2v_gender = st.selectbox("Gender", ["Male", "Female"], key="i2v_gender")
+            with v_col2:
+                i2v_voice = st.selectbox("Voice", list(VOICE_AGENTS[i2v_gender].keys()), key="i2v_voice")
+            with v_col3:
+                i2v_tone = st.selectbox("Tone", list(TONE_DESCRIPTIONS.keys()), key="i2v_tone")
+        
+        motion = st.select_slider("Motion Intensity", 
+                                   ["Subtle", "Gentle", "Moderate", "Dynamic", "Intense"],
+                                   value="Moderate", key="i2v_motion")
+        
         if st.button("📽️ Animate Image", key="i2v_gen", use_container_width=True):
-            if not i2v_prompt.strip():
-                st.warning("Please enter an animation description.")
-            elif not get_key("HF_TOKEN", "hf_token"):
-                st.error("🔑 Hugging Face Token Required.")
+            if not i2v_upload:
+                st.warning("Please upload an image to animate.")
+            elif not get_replicate_token():
+                st.error("🔑 Add Replicate API token in sidebar.")
             else:
-                with st.status("📽️ Animating your prompt via Infinite Hammer...", expanded=True) as status:
-                    st.markdown('<div class="progress-bar"></div>', unsafe_allow_html=True)
-                    video_data, v_err = generate_video_free(i2v_prompt.strip(), status)
+                with st.status("📽️ Animating your image...", expanded=True) as status:
+                    img_b64 = base64.b64encode(i2v_upload.read()).decode()
                     
-                    if v_err:
-                        status.update(label="❌ Generation Error", state="error")
-                        st.error(v_err)
+                    prompt = i2v_prompt.strip() or f"{motion.lower()} motion, cinematic, smooth"
+                    video_data, v_err = generate_video_replicate(prompt, img_b64)
+                    
+                    audio_data = None
+                    if i2v_use_voice and i2v_script.strip() and get_elevenlabs_key():
+                        st.write("🎙️ Generating voiceover...")
+                        voice_id = VOICE_AGENTS[i2v_gender][i2v_voice]
+                        audio_data, _ = generate_tts_elevenlabs(i2v_script, voice_id, i2v_tone)
+                    
+                    if v_err and not video_data:
+                        status.update(label="❌ Failed", state="error")
+                        st.error(f"Error: {v_err}")
                     else:
                         status.update(label="✅ Animated!", state="complete")
-                        st.markdown('<div class="output-frame">', unsafe_allow_html=True)
-                        st.video(video_data)
-                        st.markdown('</div>', unsafe_allow_html=True)
-                        st.download_button("⬇️ Download Video", video_data,
-                                          "animated.mp4", "video/mp4",
-                                          use_container_width=True)
-                        
+                        if video_data:
+                            st.video(video_data)
+                            st.download_button("⬇️ Download Video", video_data,
+                                              "animated.mp4", "video/mp4",
+                                              use_container_width=True)
+                        if audio_data:
+                            st.audio(audio_data, format="audio/mp3")
+                            st.download_button("⬇️ Download Audio", audio_data,
+                                              "voiceover.mp3", "audio/mp3",
+                                              use_container_width=True)
+        
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Sidebar ───────────────────────────────────────────────────────────────
+    # ── Sidebar API Keys ──────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("---")
         st.markdown("### 🔑 API Keys")
         
-        with st.expander("Configure Additional APIs"):
-            st.markdown("<small>Get a free token at huggingface.co</small>", unsafe_allow_html=True)
-            hf_key = st.text_input("Hugging Face Token (Images/Video)", type="password",
-                                    value=st.session_state.get("hf_token", ""),
-                                    key="ugc_hf_key")
-            if hf_key: st.session_state.hf_token = hf_key
+        with st.expander("Configure API Keys", expanded=not get_replicate_token()):
+            st.markdown("""
+            <div style="font-size:0.8rem;color:#6b7280;margin-bottom:0.75rem;">
+            All keys are session-only and never stored permanently.
+            </div>
+            """, unsafe_allow_html=True)
+            
+            rep_key = st.text_input("Replicate (images & videos)", type="password",
+                                     placeholder="r8_...",
+                                     value=st.session_state.get("replicate_key", ""),
+                                     key="ugc_rep_key")
+            if rep_key: st.session_state.replicate_key = rep_key
             
             el_key = st.text_input("ElevenLabs (voiceovers)", type="password",
+                                    placeholder="sk_...",
                                     value=st.session_state.get("elevenlabs_key", ""),
                                     key="ugc_el_key")
             if el_key: st.session_state.elevenlabs_key = el_key
+            
+            st.markdown("""
+            <div style="font-size:0.75rem;color:#6b7280;margin-top:0.75rem;">
+              🆓 Free tiers available:<br>
+              • <a href="https://replicate.com" target="_blank" style="color:#00f5d4;">replicate.com</a><br>
+              • <a href="https://elevenlabs.io" target="_blank" style="color:#00f5d4;">elevenlabs.io</a><br>
+              • <a href="https://replicate.com" target="_blank" style="color:#00f5d4;">replicate.com</a>
+            </div>
+            """, unsafe_allow_html=True)
