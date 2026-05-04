@@ -1,7 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import io
-import os
 import requests
 from urllib.parse import quote
 from dotenv import load_dotenv
@@ -40,7 +39,7 @@ Your identity is strictly {APP_NAME}. You are NOT ChatGPT, OpenAI, Google, Gemin
 You are a general-purpose conversational AI, but your primary directive is being a brilliant, student-centric study helper.
 If the user provides SOURCE MATERIAL, analyze it deeply and base your answers on it.
 If no files are provided, act as a comprehensive, highly intelligent assistant on any topic.
-NEVER truncate your answers. Provide exhaustive, detailed, and clear explanations."""
+Be concise, direct, and fast."""
 
 # ════════════════════════════════════════════════════════════════
 #  FILE EXTRACTION (REAL-TIME)
@@ -72,34 +71,41 @@ def extract_text(uploaded_file) -> str:
     return f"\n--- START OF FILE: {name} ---\n{result}\n--- END OF FILE ---\n"
 
 # ════════════════════════════════════════════════════════════════
-#  KEYLESS INTELLIGENCE ENGINE (BULLETPROOF & PAYLOAD CAPPED)
+#  HIGH-SPEED ENGINE (SUB-2 SECOND TARGET)
 # ════════════════════════════════════════════════════════════════
 
 def call_add_ai_engine(messages):
-    """Hits a free, keyless LLM proxy. Hard-capped timeout ensures no 60-second hanging."""
+    """Hits the free inference node with strict timeouts for maximum speed."""
+    
+    # 1. LOCAL INSTANT INTERCEPT (0.01 seconds)
+    last_msg = messages[-1]["content"].lower()
+    identity_triggers = ["who are you", "who made you", "creator", "developer", "who created you"]
+    if any(trigger in last_msg for trigger in identity_triggers):
+        return f"I am {APP_NAME}, a sovereign artificial intelligence built entirely by {CREATOR}."
+
+    # 2. FAST NETWORK REQUEST
     payload = {"messages": messages, "model": "mistral", "jsonMode": False}
     
-    # Primary API (Fast POST Request)
+    # Strict 4-second timeout to prevent hanging. 
     try:
-        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=8)
+        resp = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=4)
         if resp.status_code == 200:
             result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
             if result:
                 return result
-    except:
+    except Exception:
         pass
-
-    # Secondary API Fallback (POST to avoid URL length limits)
+            
     try:
-        resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=8)
+        resp = requests.post("https://text.pollinations.ai/", json=payload, timeout=4)
         if resp.status_code == 200:
             result = resp.text.strip()
             if result:
                 return result
-    except:
+    except Exception:
         pass
-        
-    return "⚠️ The network dropped the connection. Please click Send again."
+            
+    return "⚠️ The network was too slow to meet the 2-second speed requirement. Please try a shorter prompt."
 
 # ════════════════════════════════════════════════════════════════
 #  STREAMLIT UI
@@ -113,7 +119,7 @@ def render():
     .msg-ai { background: rgba(13,17,23,0.8); border: 1px solid rgba(0,245,212,0.2); border-radius: 16px 16px 16px 4px; padding: 1rem; margin: 0.5rem 0; }
     .msg-label { font-family: 'Syne', sans-serif; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; margin-bottom: 0.4rem; }
     @keyframes pulse { 0% { transform: scale(0.95); opacity: 0.7; } 50% { transform: scale(1.05); opacity: 1; } 100% { transform: scale(0.95); opacity: 0.7; } }
-    .logo-anim { font-size: 4rem; animation: pulse 1s infinite ease-in-out; display: inline-block; }
+    .logo-anim { font-size: 4rem; animation: pulse 0.5s infinite ease-in-out; display: inline-block; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -177,41 +183,42 @@ def render():
     </script>
     """, height=0, width=0)
 
-    # ── MESSAGE PROCESSING & ANIMATION ──
+    # ── MESSAGE PROCESSING (NO DELAYS) ──
     if st.session_state.pending_prompt:
         user_query = st.session_state.pending_prompt
         st.session_state.pending_prompt = ""
         st.session_state.chat_messages.append({"role": "user", "content": user_query})
         
-        # 2-Second Logo Animation
-        import time
+        # Flashes logo instantly while waiting for network, but DOES NOT force a sleep delay
         anim_placeholder = st.empty()
         anim_placeholder.markdown(f"""
         <div style="text-align:center; padding: 2rem;">
             <div class="logo-anim">⚡</div>
-            <div style="color: #00f5d4; font-family: 'Syne', sans-serif; font-weight: bold; margin-top: 1rem;">{APP_NAME} is processing...</div>
+            <div style="color: #00f5d4; font-family: 'Syne', sans-serif; font-weight: bold; margin-top: 1rem;">Fast Processing...</div>
         </div>
         """, unsafe_allow_html=True)
         
-        # Real-time extraction & payload logic
+        # Real-time extraction
         file_data = "".join([extract_text(f) for f in uploaded_files]) if uploaded_files else ""
         
-        # CRITICAL FIX: Limit payload size to prevent server crash/timeout
-        if len(file_data) > 6000:
-            file_data = file_data[:6000] + "\n...[Content Truncated to prevent memory overload]..."
+        # CRITICAL FIX FOR SPEED: Cut payload from 6000 to 1000 characters so the server digests it instantly
+        if len(file_data) > 1000:
+            file_data = file_data[:1000] + "\n...[Content clipped for high-speed processing]..."
             
         prompt_context = SYSTEM_PROMPT
         if file_data:
             prompt_context += f"\n\nUSER UPLOADED SOURCE MATERIAL. YOU MUST ANALYZE THIS TO ANSWER:\n{file_data}"
         
         api_msgs = [{"role": "system", "content": prompt_context}]
-        # Only send the last few messages to save bandwidth
-        for msg in st.session_state.chat_messages[-5:]:
+        
+        # Only send the last 3 messages to keep payload feather-light and fast
+        for msg in st.session_state.chat_messages[-3:]:
             api_msgs.append({"role": msg["role"], "content": msg["content"]})
         
+        # Execute instantly
         response = call_add_ai_engine(api_msgs)
         
-        anim_placeholder.empty() # Remove animation
+        anim_placeholder.empty() # Remove animation immediately once response arrives
         st.session_state.chat_messages.append({"role": "assistant", "content": response})
         st.rerun()
 
